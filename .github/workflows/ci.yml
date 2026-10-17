@@ -1,0 +1,66 @@
+name: ci
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: test -z "$(gofmt -l cmd internal migrations)"
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: local_ci_only
+          POSTGRES_DB: ygg_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 15
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: local_ci_only
+          MYSQL_DATABASE: ygg_ci
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -plocal_ci_only" --health-interval 5s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go run ./cmd/server -migrate
+        env:
+          YGG_DATABASE_DRIVER: postgres
+          YGG_DATABASE_DSN: postgres://postgres:local_ci_only@localhost:5432/ygg_ci?sslmode=disable
+      - run: go run ./cmd/server -migrate
+        env:
+          YGG_DATABASE_DRIVER: postgres
+          YGG_DATABASE_DSN: postgres://postgres:local_ci_only@localhost:5432/ygg_ci?sslmode=disable
+      - run: go run ./cmd/server -migrate
+        env:
+          YGG_DATABASE_DRIVER: mysql
+          YGG_DATABASE_DSN: root:local_ci_only@tcp(127.0.0.1:3306)/ygg_ci
+      - run: go run ./cmd/server -migrate
+        env:
+          YGG_DATABASE_DRIVER: mysql
+          YGG_DATABASE_DSN: root:local_ci_only@tcp(127.0.0.1:3306)/ygg_ci

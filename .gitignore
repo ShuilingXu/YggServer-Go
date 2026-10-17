@@ -1,0 +1,15 @@
+bin/
+web/dist/
+*.exe
+coverage.out
+*.test
+node_modules/
+*.db
+*.sqlite*
+*.log
+.env
+.env.*
+*.pem
+*.key
+.idea/
+*.tmp
