@@ -182,6 +182,7 @@ const (
 | `textures.type` | 材质种类 | `0` steve（default） / `1` alex（slim） / `2` cape |
 | `textures.is_public` | 是否进入公开皮肤库；原图鉴权由后续业务定义 | `0` 私有 / `1` 公开 |
 | `schema_migrations.dirty` | 迁移失败保护 | `0` 已完成 / `1` 执行中或失败待修复 |
+| `tokens.kind` | 登录令牌用途，Web 与游戏鉴权隔离 | `0` Web / `1` Yggdrasil |
 
 ### 4.3 表设计
 - 主键用自增 `BIGINT`；对外暴露用 UUID 字符串列（单列唯一索引）。
@@ -261,11 +262,12 @@ Yggdrasil 客户端兼容优先：路径、字段名、状态码、错误码按�
 - 统一错误响应：`{"error": "...", "errorMessage": "..."}`；成功但无内容用 204。
 - 新增非标准端点必须在 `/` 元数据或本文件里声明，不让客户端猜。
 - 基底端点：`GET /healthz` 存活检查；`GET /readyz` 检查数据库与迁移（未配置、未迁移或异常均 503）；可选 `GET /web/` 托管 React 构建产物，本轮为空白基底。
+- 皮肤站原生端点：`/api/auth/register`、`/api/auth/login`、`/api/auth/logout`；`/api/account`、`/api/account/password`、`/api/account/email`；`/api/admin/users`、`/api/admin/users/{uuid}`；`/api/players`、`/api/players/{uuid}`、`/api/players/{uuid}/textures`；`/api/textures`、`/api/textures/mine`、`/api/textures/{uuid}`、`/api/textures/{uuid}/file`；`/api/closet`、`/api/closet/{uuid}`；`/textures/{hash}`。方法、字段与权限见 README；不兼容 BS 的 PHP 前端接口。
 - 破坏性变更（字段改名、语义变化）必须先问用户。
 
 ### 6.3 安全底线
 - 密码用 bcrypt / argon2 存哈希，永不回显、永不打日志。
-- 令牌用 `crypto/rand` 生成，落库只存哈希，比较用常量时间比较。
+- 令牌用 `crypto/rand` 生成，accessToken 落库只存哈希，比较用常量时间比较。Yggdrasil 的 clientToken 为兼容不传 clientToken 的 refresh 请求，允许保存校验哈希与 AES-GCM 加密副本；加密密钥由对应 accessToken 派生，不落库，不记录日志（用户于 2026-10-17 批准此例外）。
 - 所有 SQL 用参数化查询，禁止字符串拼接。
 - 上传文件校验 MIME 与实际字节、限制尺寸，落盘文件名由服务端生成。
 - 不在仓库提交任何密钥；配置从环境变量或未跟踪的本地文件读取。
@@ -408,6 +410,9 @@ $dir = Get-ChildItem "$env:LOCALAPPDATA\GitHubDesktop" -Directory |
 | 2026-10-17 | 本会话环境与旧记录不同 | 当前 Shell 为 PowerShell 7.6.5，`rg` 已可用（旧“无 rg”记录已失效） | 以当前 `Get-Command` 和 `$PSVersionTable` 重新校准为准 |
 | 2026-10-17 | PowerShell 原生命令参数不能写 `--datadir=(Join-Path ...)` | MySQL 收到空 datadir 并尝试使用程序目录，初始化拒绝执行 | 先计算路径，再传入完整的 `"--datadir=$myData"` 参数 |
 | 2026-10-17 | Windows 上 Vite 会占用原生依赖文件 | 开发服务运行期间执行 `npm ci`，删除 rolldown 的 `.node` 文件报 EPERM | 先停止本任务启动的 Vite，再运行 `npm ci`；不要改权限或清理其他进程 |
+| 2026-10-17 | PowerShell 不展开传给 rg 的路径通配符 | `rg ... internal/identity/*.go` 被当成字面路径而报错 | 用 `rg ... internal/identity -g '*.go'`，不依赖 Shell 展开 |
+| 2026-10-17 | PowerShell 7 的 ConvertFrom-Json 自动解析时间 | ISO 时间已变成 DateTime，再按字符串 Parse 会受区域格式影响而失败 | 直接使用 DateTime 并转 UTC，不把对象先隐式转回区域字符串 |
+| 2026-10-17 | Start-Process 返回不代表依赖已就绪 | Redis 尚未监听时启动应用会退出，验收代理显示 502，即使构建测试通过 | 先确认 Redis PING 就绪再启动应用；测试故障恢复时保持应用运行，仅重启 Redis |
 |  |  |  |  |
 
 ---

@@ -18,11 +18,16 @@ import (
 	"github.com/ShuilingXu/YggServer-Go/internal/config"
 	"github.com/ShuilingXu/YggServer-Go/internal/database"
 	"github.com/ShuilingXu/YggServer-Go/internal/httpserver"
+	"github.com/ShuilingXu/YggServer-Go/internal/identity"
+	"github.com/ShuilingXu/YggServer-Go/internal/redisstore"
 	"github.com/ShuilingXu/YggServer-Go/internal/signing"
 	"github.com/ShuilingXu/YggServer-Go/migrations"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 func main() {
+	// Redis 的原始诊断可能带有服务端文本，只由外层记录脱敏后的错误。
+	logging.Disable()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
 		if len(groups) == 0 && attr.Key == slog.TimeKey {
 			attr.Value = slog.TimeValue(attr.Value.Time().UTC())
@@ -38,8 +43,19 @@ func main() {
 func run(logger *slog.Logger) error {
 	keyPath := flag.String("generate-key", "", "生成 RSA 4096 私钥到指定的新文件后退出")
 	migrate := flag.Bool("migrate", false, "显式执行数据库迁移后退出")
+	owner := flag.String("promote-owner", "", "将已有正常账号设为站点所有者后退出")
 	flag.Parse()
-	if flag.NArg() != 0 || (*keyPath != "" && *migrate) {
+	actions := 0
+	if *keyPath != "" {
+		actions++
+	}
+	if *migrate {
+		actions++
+	}
+	if *owner != "" {
+		actions++
+	}
+	if flag.NArg() != 0 || actions > 1 {
 		return fmt.Errorf("invalid command arguments")
 	}
 	if *keyPath != "" {
@@ -52,7 +68,7 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var db *sql.DB
-	if c.DatabaseDSN != "" || *migrate {
+	if c.DatabaseDSN != "" || *migrate || *owner != "" {
 		connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		db, err = database.Open(connectCtx, c.DatabaseDriver, c.DatabaseDSN)
 		cancel()
@@ -73,9 +89,33 @@ func run(logger *slog.Logger) error {
 		logger.Info("migrations complete", "driver", c.DatabaseDriver)
 		return nil
 	}
+	if *owner != "" {
+		email, err := identity.Email(*owner)
+		if err != nil {
+			return err
+		}
+		if err := migrations.Check(ctx, db, c.DatabaseDriver); err != nil {
+			return err
+		}
+		if err := (&identity.Store{DB: db, Dialect: c.DatabaseDriver}).PromoteOwner(ctx, email); err != nil {
+			return err
+		}
+		logger.Info("owner permission granted")
+		return nil
+	}
 	key, err := signing.Load(c.SigningKeyFile)
 	if err != nil {
 		return err
+	}
+	var cache *redisstore.Store
+	if c.RedisURL != "" {
+		connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		cache, err = redisstore.Open(connectCtx, c.RedisURL, c.RedisPrefix)
+		cancel()
+		if err != nil {
+			return err
+		}
+		defer cache.Close()
 	}
 	publicKey, err := signing.PublicPEM(key)
 	if err != nil {
@@ -98,7 +138,12 @@ func run(logger *slog.Logger) error {
 		}
 		c.PublicURL = "http://" + net.JoinHostPort(host, port)
 	}
-	handler, err := httpserver.New(c, publicKey, db, logger)
+	if c.TexturesDir != "" {
+		if err := os.MkdirAll(c.TexturesDir, 0700); err != nil {
+			return fmt.Errorf("create texture storage directory")
+		}
+	}
+	handler, err := httpserver.New(c, publicKey, key, db, cache, logger)
 	if err != nil {
 		return err
 	}

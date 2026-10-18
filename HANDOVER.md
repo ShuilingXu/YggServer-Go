@@ -1,52 +1,47 @@
 # HANDOVER
 
-只记录当前状态、下一步与待决策；工程规则见 AGENTS.md。
+当前状态、下一步与待决策；工程规则见 AGENTS.md。
 
 ## 当前状态
 
-- 已按用户更正采用 **Go + React**，PostgreSQL 为主并兼容 MySQL，不使用 Rust。本轮仅完成基底，没有 UI 或业务流程。
-- Go：标准库 HTTP；集中配置校验；RSA 4096 私钥显式生成/加载与公钥发布；元数据 `/`；`/healthz`；检查迁移历史的 `/readyz`；JSON 错误；请求 ID、路由模板、IP HMAC 脱敏日志；优雅关闭。
-- 数据库：pgx + go-sql-driver/mysql，连接池、超时、UTC；accounts/textures/players/closet 的两套 SQL 迁移；唯一约束、外键和整数枚举；显式 `-migrate`、会话锁、校验和与 dirty 失败保护。没有运行时隐式迁移，没有登录/令牌/会话写入。
-- React：React 19.3.1 + Vite 8.3.4 + TypeScript 7.0.2；锁文件、空根节点、存活检查调用、开发代理、`/web/` 生产构建托管。没有样式、页面、路由或 UI 组件库。
-- 工程：`.gitignore`、LF `.gitattributes`、Go 模块与 npm 锁文件、CI 配置、README 启动与配置说明已齐备。没有空的 auth/session/skin 包。
-- 工作区尚未提交或推送，未新建/切换分支。AGENTS.md、HANDOVER.md、blessing-skin-report.md 在本任务开始前就是未跟踪文件，未清理这些用户文件。
+- 已完成 Redis、账号/角色、皮肤/衣柜及经典 Yggdrasil 核心后端。Yggdrasil 原生注册在程序内，不依赖 PHP、插件、Passport 或 JWT。React 文件没有改动，仍为空白基底。
+- Redis：go-redis，redis/rediss URL、ACL/TLS 配置、命名空间、连接池、明确超时；原子限流和 60 秒一次性进服凭据。已配置 Redis 纳入 readyz；运行时故障拒绝凭证操作，恢复后自动重连。原始客户端诊断由 main 禁用，仅保留外层脱敏日志。
+- 账号：bcrypt 注册，注册事务创建初始角色；邮箱或角色名登录，Web Bearer 令牌；单会话退出、改密、改邮箱、软注销；角色增删改；普通/管理员/所有者权限；用户列表与封禁/解禁。HTTP 权限变化和 CLI 所有者授权均在事务内撤销目标全部令牌。所有者必须从部署终端显式授予。
+- 令牌：随机 accessToken，只存 SHA-256；Web/游戏用途隔离；24 小时有效、游戏 7 天刷新窗口；原子旋转、并发仅一个刷新成功；每账号 20 个令牌，淘汰最旧。clientToken 保存哈希和 AES-GCM 加密副本，密钥由对应 accessToken 派生；用户已批准此协议兼容例外，登记在 AGENTS.md。
+- 皮肤：公开库、个人上传、私有详情/原图、改名/模型/隐私、删除、衣柜与备注、角色皮肤/披风穿戴。PNG 字节/MIME/输入大小/宽高/比例/像素校验、重编码与 SHA-256 文件名；22×17 披风补边。共享文件发布和最后引用删除使用数据库会话锁；SQL 写入使用事务与外键。公开转私有会清除其他用户的衣柜和穿戴引用。
+- 原生协议：authenticate/refresh/validate/invalidate/signout、join/hasJoined、profile、批量按名称查询、标准材质 PUT/DELETE 与 /minecraft/profile/skins 入口。默认 unsigned=true，指定 false 才签名；签名为 SHA1withRSA，根元数据发布 RSA 公钥；客户端令牌校验、IP 匹配、令牌撤销和一次性消费均已实现。
+- 两库各有 15 个前向迁移。新增 tokens、用途字典、角色名大小写唯一索引、clientToken 加密列；015 撤销不具备加密副本的早期令牌。既有 001–010 未修改。README 包含配置、接口、权限和部署边界。
+- 改动留在工作区，没有提交、推送或切换分支。
 
-## 验证状态
+## 验证状态（2026-10-17）
 
-- Go 1.27.2：`gofmt -l` 干净，`go build ./...`、`go vet ./...`、`go test ./...` 均通过。
-- 前端：`npm ci` 干净安装与 `npm run build` 均通过，TypeScript 检查通过。Windows 原生依赖文件锁问题已通过停止本任务的 Vite 进程解决。
-- TEMP 临时实例：PostgreSQL 18.4、MySQL 8.4.11，均实际执行 10 个迁移、重复执行及并发执行；整数枚举回读、唯一约束、CHECK、外键拒绝均通过；测试数据在事务内回滚。
-- 两库的 dirty 标记、篡改校验和均令迁移命令拒绝执行；恢复正确历史后可重新运行。HTTP 启动不自动修复历史。
-- 实际 Ctrl+C 后看到 `server stopped` 日志；这是优雅关闭路径的验证，SIGTERM 未另测。
+- Go 1.27.2：go build ./...、go vet ./...、go test ./... 均通过；gofmt -l 干净，git diff --check 通过。新增测试覆盖令牌过期/用途/封禁、clientToken 加密与篡改拒绝、离线 UUID、PNG 格式和尺寸拒绝及披风补边。
+- PostgreSQL 与 MySQL 均实际应用 15 个迁移。两库各完成 33 项核心、31 项管理、34 项材质和 14 项生命周期浏览器检查；未以 curl 替代。
+- SQL 与文件核对：两库迁移无 dirty，令牌仅哈希与加密列、密码为 bcrypt；缺失材质文件和无引用文件均为 0。CLI 所有者授权前各有一个旧令牌，授权后均为 0；MySQL 重复授权成功。
+- 访问日志检查：未发现凭证字段、请求体、原始 query 或原始客户端 IP；最终 Redis 故障测试 stderr 为空，启动失败仅一条脱敏 JSON 错误。
+- React 未改动，本轮未重跑 npm 构建。没有声称验证新的 UI。
 
-### 浏览器验收记录（2026-10-17）
+### 浏览器验收记录
 
-- 功能：元数据、数据库就绪、React 基底与开发代理。
-- 访问：PostgreSQL 服务 `http://127.0.0.1:58463/`、`/readyz`、`/web/`；MySQL 服务 `http://127.0.0.1:58462/`、`/readyz`；Vite `http://127.0.0.1:54615/web/`（均为实际浏览器访问）。
-- 操作：两库正常迁移后访问；设置 dirty 后再次访问并运行迁移；恢复历史后访问；测试错误方法、未知路径和 Vite `/healthz` 代理。另访问未配置数据库的 `http://127.0.0.1:62128/readyz`。
-- 看到：元数据含站点名、域名白名单、PEM 公钥与 ALI 头；正常就绪 200、dirty/未配置数据库 503、错误方法 405、未知路径 404；React 生产和开发入口均为空白根节点，存活检查成功，Console 无错误。
-- 状态码证据：TEMP 中的浏览器诊断页 `http://127.0.0.1:51635/` 通过实际浏览器请求读取 Response.status、响应头及 JSON；不是 curl 验收。Console 通过浏览器日志接口检查。内置浏览器没有开放独立 DevTools Network 面板，未声称操作过该面板。
-- 未覆盖：真实 Minecraft/authlib-injector 客户端、完整登录和上传流程（本轮未实现）；GitHub CI 远程执行（未推送）；SIGTERM 的单独进程信号测试。验收进程已停止，记录端口不再提供服务。TEMP 目录清理被自动审批拒绝，详见下方待清理项。
+- 功能：注册、Web/游戏登录退出、权限、改密、改邮箱、注销、角色生命周期、皮肤/衣柜、Yggdrasil 与 Redis 故障恢复。
+- 访问：PostgreSQL 实际后端 http://127.0.0.1:50030/ 与 /readyz；核心和管理诊断页 http://127.0.0.1:58005/__qa、/__qa-admin；最终材质和生命周期页 http://127.0.0.1:51056/__qa-skin、/__qa-lifecycle。MySQL 实际后端 http://127.0.0.1:51052，诊断页 http://127.0.0.1:51065/__qa、/__qa-admin、/__qa-skin、/__qa-lifecycle。以上均为实际浏览器访问；诊断代理只在 TEMP，不是产品 UI。
+- 操作：重复注册、错误/正确密码、管理员权限和封禁、改密/邮箱/注销；多角色选择与并发刷新；PNG 上传、私有读取、跨用户修改拒绝、衣柜备注、穿戴、隐私变化、共享文件删除、披风补边；浏览器使用公钥验签；进服 IP 不匹配、一次性消费、自然等待 60 秒过期；角色改名/删除和未绑定令牌拒绝进服；保持应用运行，单独停止和恢复 Redis。
+- 看到：注册 201、重复 409、错误凭证/越权 403、原生上传无凭证 401、非法图片/模型 400；正常退出/穿戴/进服 204；刷新后旧令牌失效且并发仅一次成功；省略 clientToken 可刷新并回显原值；浏览器确认 RSA/SHA-1 签名有效；私有未穿戴原图匿名 404，上传者鉴权可读；共享文件保留至最后引用删除。Redis 停机时 readyz=503、healthz=200、登录=503；恢复后两种后端均无需重启应用即可 readyz=200，错误凭证登录回到 403。
+- 浏览器日志接口未记录 Console 错误。状态码通过诊断页中的实际浏览器 Response.status 检查；内置浏览器未开放独立 DevTools Network 面板，未声称操作过该面板。
+- 验收脚本曾因集中请求触发预期 429，改用独立限流窗口后通过，未调整限制或断言；重启顺序曾导致 Redis 未就绪、应用拒绝启动及代理 502，已先确认 Redis 就绪后重跑并通过故障恢复。相关环境坑已记录在 AGENTS.md。
+- 未覆盖：真实 Minecraft/authlib-injector 启动器与服务端联调；生产 TLS/Redis ACL/TLS；GitHub 远程 CI。当前任务未重新验证 Ctrl+C/SIGTERM。
+- 验收进程均已停止，上述端口已不再提供服务。保留的真实截图：C:/Users/shuil/AppData/Local/Temp/yggserver-features-skin-qa.png。
 
-## 环境
+## 下一步与待决策
 
-- 当前执行 Shell 为 PowerShell 7.6.5，`rg` 已可用，旧环境记录不能代替自检。
-- Go 1.27.2 使用 `%LOCALAPPDATA%/Programs/Go/bin/go.exe`；Git 2.53.0 使用 GitHub Desktop app-3.6.7 自带程序。
-- Node 24.21.0 / npm 11.19.0；未更改用户 npm registry 或 Go 代理设置。
-- 数据库仅为 TEMP 内的独立临时实例，没有安装系统服务或改动系统数据库。
+1. 在自建持久数据库、Redis 和受限私钥目录中配置部署，显式迁移并授予所有者，进行真实启动器与 Minecraft 服务端联调。
+2. 部署前确定 TLS 与可信代理/真实客户端 IP 方案。当前只信任 RemoteAddr；经过反向代理时限流共享代理地址，hasJoined 的可选 ip 不能直接匹配真实客户端地址。
+3. 当前角色使用离线 UUID v3，改名会改变 UUID 和离线世界身份；若要求改名保留身份，需要另行确定随机 UUID 策略。当前软注销保留账号邮箱和 UUID。
+4. 私有控制条目与未穿戴原图；穿戴后须允许游戏按 hash 下载，不能当成强保密文件。进程崩溃或数据库不可用的极端文件/事务窗口可能留下不可达文件，后续离线核对须保留数据库引用保护。
+5. 邮件验证/找回密码、旧 BS 数据迁移、积分、举报、头像/预览渲染和 OAuth/OIDC 尚未实现，不属于当前经典认证与皮肤管理核心；如需要，再单独确定范围。UI 设计按用户要求延后。
 
-## 下一步
+## TEMP 清理状态
 
-1. 按 README 使用本地持久私钥与自建数据库启动；运行显式迁移，再启动 HTTP 服务。
-2. 完成账号/角色的 service/store、密码哈希、UUID 及随机令牌哈希存储，再接 authenticate/refresh/validate/invalidate/signout。
-3. 随后实现 join/hasJoined、profile SHA1withRSA 属性签名和材质上传/分发，复用现有配置、日志、错误响应和迁移入口。
-4. UI 在后续任务中实现；当前不需要添加页面或更换前端栈。
-
-## 待业务决策
-
-- 公网域名、部署端口、生产 TLS 与数据库凭证由部署环境提供，基底均已参数化。
-- 后续业务仍需确认 UUID v3/v4 策略、是否多角色、是否迁移 BlessingSkin 旧库，以及私有材质的访问策略。不得直接复制调研中的 client_token 明文落库、字符串枚举或会话表设计。
-
-## 待清理项
-
-本轮验收进程已停止。用户已明确授权永久删除本轮生成的临时目录，但获授权后的删除命令仍被执行策略拒绝（仅返回 blocked by policy，无详细原因）。目录为 C:/Users/shuil/AppData/Local/Temp/yggserver-scaffold-qa，包含测试数据库、测试密钥、下载包和一次性脚本；这些文件均在仓库外，未提交或复制到仓库。不再要求用户重复授权；需要由用户手动删除该目录，或等待执行策略解除后再清理。
+- 当前任务的应用、代理、Redis、PostgreSQL 和 MySQL 临时进程均已停止。
+- 自动审批两次拒绝删除 C:/Users/shuil/AppData/Local/Temp/yggserver-features-qa，包括改成已核实路径的字面量 Remove-Item 后仍拒绝；仅返回 blocked by policy，无详细原因。目录仍在 TEMP，含本轮下载、测试程序、日志和一次性诊断脚本，未进入仓库。需要手动删除，不再重复请求已具备的清理授权。
+- 任务开始前已存在的 C:/Users/shuil/AppData/Local/Temp/yggserver-scaffold-qa 被用于临时双数据库与测试依赖，本轮未删除该原有目录；其中数据库已停止。原交接记录中该目录也属于待清理项。

@@ -1,0 +1,1 @@
+ALTER TABLE tokens ADD COLUMN client_cipher BYTEA NOT NULL DEFAULT '';

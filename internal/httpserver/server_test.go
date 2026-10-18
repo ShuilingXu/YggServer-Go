@@ -32,7 +32,7 @@ func TestMetadataAndSafeHTTPBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer
-	handler, err := httpserver.New(config.Config{PublicURL: "https://skin.example.com", ServerName: "Example", DatabaseDriver: "postgres"}, public, nil, slog.New(slog.NewJSONHandler(&logs, nil)))
+	handler, err := httpserver.New(config.Config{PublicURL: "https://skin.example.com", ServerName: "Example", DatabaseDriver: "postgres"}, public, key, nil, nil, slog.New(slog.NewJSONHandler(&logs, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,6 +17,9 @@ type Config struct {
 	DatabaseDriver string
 	DatabaseDSN    string
 	WebDir         string
+	RedisURL       string
+	RedisPrefix    string
+	TexturesDir    string
 }
 
 func Load() (Config, error) {
@@ -28,6 +31,9 @@ func Load() (Config, error) {
 		DatabaseDriver: value("YGG_DATABASE_DRIVER", "postgres"),
 		DatabaseDSN:    os.Getenv("YGG_DATABASE_DSN"),
 		WebDir:         os.Getenv("YGG_WEB_DIR"),
+		RedisURL:       os.Getenv("YGG_REDIS_URL"),
+		RedisPrefix:    value("YGG_REDIS_PREFIX", "ygg:"),
+		TexturesDir:    os.Getenv("YGG_TEXTURES_DIR"),
 	}
 	if _, _, err := net.SplitHostPort(c.ListenAddr); err != nil {
 		return Config{}, fmt.Errorf("invalid YGG_LISTEN_ADDR")
@@ -41,6 +47,15 @@ func Load() (Config, error) {
 	}
 	if c.DatabaseDriver != "postgres" && c.DatabaseDriver != "mysql" {
 		return Config{}, fmt.Errorf("YGG_DATABASE_DRIVER must be postgres or mysql")
+	}
+	if c.RedisURL != "" {
+		u, err := url.Parse(c.RedisURL)
+		if err != nil || (u.Scheme != "redis" && u.Scheme != "rediss") || u.Hostname() == "" || u.Fragment != "" {
+			return Config{}, fmt.Errorf("invalid YGG_REDIS_URL")
+		}
+	}
+	if len(c.RedisPrefix) > 64 || strings.ContainsAny(c.RedisPrefix, " \t\r\n") {
+		return Config{}, fmt.Errorf("invalid YGG_REDIS_PREFIX")
 	}
 	for _, domain := range strings.Split(os.Getenv("YGG_SKIN_DOMAINS"), ",") {
 		domain = strings.TrimSpace(domain)
