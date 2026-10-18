@@ -1,6 +1,6 @@
 # YggServer-Go
 
-Go + React 的 Minecraft Yggdrasil 登录服务与皮肤站，PostgreSQL 为主，兼容 MySQL。Redis 用于原子限流和短期进服凭据；账号与令牌的撤销状态保存在 SQL。Yggdrasil 是程序内置能力，不需要插件。React 保留原有空白基底，本轮没有页面或视觉设计。
+Go + React 的 Minecraft Yggdrasil 登录服务与皮肤站，PostgreSQL 为主，兼容 MySQL。Redis 用于原子限流和短期进服凭据；账号与令牌的撤销状态保存在 SQL。Yggdrasil 是程序内置能力，不需要插件。正式 React 前端位于同级 YggWeb-React，按 Blessing Skin 默认布局重写；本仓库 web/ 保留早期空白基底。
 
 ## 环境与启动
 
@@ -155,7 +155,7 @@ gofmt -l internal cmd migrations
 
 测试只使用标准库 testing，不连接外部网络或生产数据库。浏览器与双数据库集成验收记录见 HANDOVER.md。真实 Minecraft/authlib-injector 客户端联调未覆盖。
 
-React 基底仍通过 `cd web; npm ci; npm run dev` 开发，`npm run build` 生成可由 YGG_WEB_DIR 托管的产物。API 根目录不作为 UI 页面。没有增加 BS 的 PHP 插件/前端兼容层、积分、OAuth/OIDC 或旧库迁移。邮箱恢复仅提供必要功能表单，React 页面仍未设计。
+正式界面在同级 `YggWeb-React` 开发，使用其 `npm run dev` 和 `npm run build`；将 `YGG_WEB_DIR` 指向该项目 `dist` 即可托管 `/web/`，前端采用 hash 路由。API 根目录仍发布元数据。没有增加 BS 的 PHP 插件/前端兼容层或旧库迁移；站点运营与 OAuth/OIDC 见下文；邮件最终消费继续使用 `/account-recovery` 功能页。
 ## 邮件与恢复凭据
 
 启用 SMTP 后，Web 用户通过 `/api/account/verification` 请求验证邮件，未登录用户通过 `/api/auth/forgot-password` 请求重置。默认不强制未验证账号验证后才能登录。找回入口对不存在邮箱、已封禁账号、发送冷却及 SMTP 投递失败均保持 202；非法邮箱 400，邮件/Redis 未配置或不可用 503。投递失败在外层脱敏记录，不向浏览器返回 SMTP 原始文本。
@@ -231,3 +231,41 @@ mysql -h RESTORE_HOST -P 3306 -u RESTORE_USER -p --database=ygg_restore --execut
 5. 将配置指向恢复库、恢复材质目录及原私钥，先使用与快照匹配的程序检查迁移及 `-check-textures`。确认完整迁移、引用文件内容和原公钥后，再单独规划版本升级及切流。因数据库备份可能恢复旧的 Web/游戏会话与恢复凭据，正式恢复切流前应在恢复库内撤销 `tokens` 和 `recovery_tokens`，让用户重新登录；不要恢复 Redis 短期进服记录。
 
 以上是操作说明，尚未执行数据库备份恢复演练，也未进行生产切流或部署联调。
+
+
+## 站点运营、积分与授权
+
+正式前端在同级 `YggWeb-React`。站点所有者从 `/web/#/admin/site` 管理站点信息和规则，普通管理员没有配置与 OAuth 应用管理权限。`GET /api/site` 提供前端公开规则；`PUT /api/admin/site` 提交完整配置对象，成功 204，非法配置 400，非所有者 403。配置持久化在 `site_settings`，不缓存；保存后用于后续请求，配置更新与审计同事务。名称同时更新根元数据及前端页头、标题；简介和公告以纯文本展示。
+
+配置字段：`name/description/announcement`；`registration=0|1`；`emailMode=0|1|2`（不限制/白名单/黑名单）、`emailDomains`（空格分隔、大小写不敏感、精确匹配，不隐式包含子域名，注册与改邮箱共用）；`skinDomains`（额外材质域名，空格分隔，加入根元数据白名单，保留启动配置与公开地址的域名）；`maxPlayers=1..100`（1 即单角色，降低上限不删除已有角色）；`singleSession=0|1`（开启后下次登录清除同类旧会话，Web 与游戏各自独立）；`signEnabled=0|1`、`signHours=1..8760`、`signMin/signMax=0..1000000`；`initialPoints/playerCost/uploadCost/privateUploadCost/closetCost=0..1000000`，私有单价不得低于公开；`oauthEnabled=0|1`。公开 URL、SMTP、数据库与密钥继续从部署环境读取，不能在界面改写。
+
+`GET /api/account/points` 返回 `{balance,nextSignAt,entries}`（最近 50 条；流水含 `id/delta/kind/createdAt`）。`POST /api/account/sign` 成功返回更新后的同结构，签到间隔按上次成功时间滚动计算，随机奖励包含上下界；账号行锁保证并发只能成功一次。冷却中 409 `AlreadySigned`，关闭时 403。余额从持久化流水求和，不另存余额。新增角色、上传、收藏、转私有的扣款与业务写入共用账号锁和事务；不足返回 409 `InsufficientPoints`，失败回滚。上传按服务器重编码后的字节数向上取整为 KiB；首次上传自带衣柜条目不另收收藏费；改收藏备注不重复扣费，移除后重新收藏会收费。公开转私有按当前配置补差价；转公开、删除与取消收藏不退款，避免反复操作套取奖励。首次注册的角色不收费。迁移 026 为既有账号一次性发放 1000 初始积分；后续新注册使用当前 `initialPoints`。默认新账号 1000，签到 10–100/24h，新增角色 100，上传与收藏费用默认 0。
+
+### 本站 OAuth2 授权服务
+
+`oauthEnabled` 默认关闭。所有者创建公共客户端：`POST /api/admin/oauth/clients`，JSON `{name,redirectUri}`，201 返回 `{id,name,redirectUri}`；GET 列出应用；DELETE `/api/admin/oauth/clients/{uuid}` 撤销应用及全部关联授权。回调地址精确匹配，仅 HTTPS 或 loopback HTTP，不支持 fragment、通配符与 URL 凭据。
+
+应用打开 `/oauth/authorize?response_type=code&client_id=...&redirect_uri=...&scope=User.Read%20Player.Read&state=...&code_challenge=...&code_challenge_method=S256`，前端在 `/web/#/oauth/authorize` 展示名称、回调与权限，用户登录后显式同意或拒绝。`POST /api/oauth/authorize` 使用 Web Bearer，JSON 同名字段加 `approve`，返回 `{redirect}`；客户端必须验证原样回传的 `state`。拒绝回调 `error=access_denied`。授权码五分钟有效、只能兑换一次、每账号最多保留 50 条有效授权；新授权时清理该账号过期记录。
+
+`POST /oauth/token` 使用 `application/x-www-form-urlencoded`，字段 `grant_type=authorization_code/code/client_id/redirect_uri/code_verifier`。仅接受 S256 PKCE；成功返回 `access_token/token_type=Bearer/expires_in=3600/scope`；错误授权码、过期、重放或 PKCE 错误返回 400 `invalid_grant`。没有密码模式、隐式模式、refresh token 或 OIDC ID Token；本站 OAuth 与第三方 OIDC 登录为两个独立方向。
+
+`GET /oauth/userinfo` 要求 `User.Read`，仅返回 `{sub:账号UUID}`；`GET /oauth/players` 要求 `Player.Read`，返回该用户角色数组。只提供这两个只读 scope，OAuth 令牌不能调用 Web 管理或游戏接口。授权依附于发起时的 Web 会话：Web 退出、改密、改邮箱、封禁、单会话替换等导致父令牌删除时，通过外键同步撤销；访问时还校验父会话过期和账号状态。用户在账号页查看应用并通过 `DELETE /api/account/oauth/{clientUuid}` 单独撤销；此操作不影响本站登录。授权码和 access token 仅存摘要；scope 在数据库中使用 SMALLINT 权限位（1=User.Read、2=Player.Read、3=两者），API 仍使用标准空格分隔字符串。
+
+### 第三方 OIDC 登录
+
+站点所有者配置 `oidcEnabled=1`、`oidcIssuer`（与提供方 issuer 完全一致）、`oidcClientId`、`oidcName`。提供方回调必须登记为 `YGG_PUBLIC_URL/oidc/callback`；生产 issuer 与发现的端点使用 HTTPS，HTTP 仅允许 loopback 隔离测试。机密客户端设置 `YGG_OIDC_CLIENT_SECRET` 并重启；公共 PKCE 客户端可不设置，按提供方应用类型配置。密钥不存站点表、不回显到 API、不进入前端。开发调试请从 `YGG_PUBLIC_URL/web/` 发起，确保返回同一 origin 与同一标签页的 sessionStorage。
+
+登录页通过 `POST /api/auth/oidc/start` 获得 `{url,state}` 后跳转提供方；账号页 `POST /api/account/oidc/start` 使用当前 Web Bearer 发起绑定。服务端 Redis 保存十分钟一次性流程（key 是 state 摘要），浏览器仅在 sessionStorage 保存本次 state，回调清除地址栏中的 code/state，再经 `POST /api/auth/oidc/complete` JSON `{state,code}` 换取本站 Web 令牌。校验 PKCE、nonce、issuer、audience、有效期、JWKS 签名与存在时的 at_hash；流程消费与重放保护使用 Redis GETDEL。提供方的 access/ID token 不持久化、不传给前端。使用 `go-oidc` 和 `oauth2` 处理协议细节，网络有明确超时且拒绝提供方 HTTP 重定向。
+
+外部身份以 issuer + subject 唯一标识。首次登录仅用 `email_verified=true` 的合法邮箱创建新账号，遵守注册开关与邮箱域名规则，复用注册事务创建 `OIDC_` 加随机后缀的角色及初始积分；用户可在角色页改名。同邮箱旧账号不会自动合并，须先以原凭据登录并显式绑定。已绑定身份登录会检查账号状态。新账号的本站密码为不可知随机值；需要游戏密码登录或解绑时，请先通过邮件找回流程设置本站密码（需配置 SMTP）。账号页 GET `/api/account/oidc` 查看绑定；DELETE `/api/account/oidc/{uuid}` JSON `{password}` 要求正确本站密码，解绑与撤销全部会话同事务，并记管理审计。没有实现 GitHub 等非 OIDC 平台的专用 OAuth 登录适配。
+
+审计动作追加 4=站点配置、5=OAuth 应用、6=外部绑定、7=外部解绑。访问日志沿用每请求一条、路由模板和 IP HMAC，4xx 记 WARN、5xx 记 ERROR，其余 INFO，底层不重复打印同一错误；业务日志只含安全标识、结果与 Request ID，不记录 code、state、nonce、PKCE verifier、外部令牌或 Client Secret。迁移仅追加 022–034，旧迁移保持不变。
+
+### 站点运营验收（2026-10-18）
+
+- 构建：`go build ./...`、`go vet ./...`、`go test ./...` 通过，`gofmt -l internal cmd` 无输出。React 的类型检查、测试和生产构建通过。OIDC 新增 go-oidc/oauth2 依赖以复用 JWT/JWKS、签名轮换与协议校验，避免自行实现数百行安全敏感逻辑；没有新增前端依赖。
+- 功能：配置、积分、签到、限制、本站 OAuth。访问：实际浏览器 `http://127.0.0.1:55427/__qa`、`/__qa-extra`（PostgreSQL），`http://127.0.0.1:55428` 同路径（MySQL）。操作：保存配置与越权拒绝、并发签到、角色/上传/收藏/隐私消费与不足回滚、域名和注册限制、授权同意/拒绝、错误 PKCE、授权码重放/并发兑换、scope 隔离及撤销。看到：两库最终分别通过 40+22 项检查；并发签到仅一次成功，余额不足不留下业务记录，OAuth 令牌不能用作本站会话。
+- 功能：第三方 OIDC。访问：浏览器 `http://127.0.0.1:55407/__qa-oidc`、`http://127.0.0.1:55408/__qa-oidc`，以及正式页面 `http://127.0.0.1:55405/web/#/login`。操作：本地 RSA/JWKS 提供方真实授权跳转、注册/登录/绑定/解绑，错误 nonce、audience、签名、过期、未验证邮箱及重放。看到：两库各通过 15 项拒绝路径与 16 项身份流程检查；正式页面回到用户中心，地址栏清除回调凭据，同邮箱不自动合并。
+- 功能：正式 React 页面。访问：`http://127.0.0.1:55407/web/#/admin/site`、`http://127.0.0.1:55405/web/#/points`、账号页和授权页；最终新库冒烟为 `http://127.0.0.1:55415/web/#/register`。操作：保存站点名称/公告、签到、授权同意/拒绝、登录及查看账号。看到：配置立即更新，最终账号积分 1000→1083，签到按钮进入冷却；1280 宽度深浅主题、375×812 深色布局实际查看。移动端未完成触控专项检查。
+- 两库最终隔离新库均有 34 个迁移、dirty=0，OAuth scope 为 SMALLINT，无负余额及异常凭据存储。最终两库日志各 81 条访问记录，无重复 Request ID 访问日志，未检出测试密码或凭据字段。浏览器实际访问未鉴权接口得到 403，对应一条 WARN；停止 Redis 后 readyz=503，对应一条 ERROR，随后已恢复 Redis 完成回归。没有迁移用户原有数据库。
+- 页面 Console 检查未见未捕获异常。状态码来自实际浏览器 Response.status；内置浏览器没有独立 DevTools Network 面板，未声称操作该面板。未覆盖：Google/Microsoft 等真实平台、生产 TLS/Client Secret、外部 SMTP、真实 Minecraft 客户端。验收服务现已停止，上述地址仅记录当时结果。

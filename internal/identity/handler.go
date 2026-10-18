@@ -14,6 +14,7 @@ import (
 	"github.com/ShuilingXu/YggServer-Go/internal/httpapi"
 	"github.com/ShuilingXu/YggServer-Go/internal/model"
 	"github.com/ShuilingXu/YggServer-Go/internal/redisstore"
+	"github.com/ShuilingXu/YggServer-Go/internal/site"
 )
 
 type Handler struct {
@@ -27,6 +28,10 @@ func (h *Handler) failure(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrCredentials), errors.Is(err, ErrDenied):
 		status = http.StatusForbidden
+	case errors.Is(err, site.ErrCooldown), errors.Is(err, site.ErrFunds):
+		status = http.StatusConflict
+	case errors.Is(err, site.ErrPolicy):
+		status = http.StatusBadRequest
 	case errors.Is(err, ErrConflict):
 		status = http.StatusConflict
 	case errors.Is(err, ErrInvalid):
@@ -36,14 +41,20 @@ func (h *Handler) failure(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, ErrRateLimited):
 		status = http.StatusTooManyRequests
 		w.Header().Set("Retry-After", "60")
-	default:
-		h.Logger.ErrorContext(r.Context(), "identity operation failed", "request_id", w.Header().Get("X-Request-ID"))
 	}
 	if (strings.HasPrefix(r.URL.Path, "/api/user/profile/") || r.URL.Path == "/minecraft/profile/skins") && status == http.StatusForbidden {
 		status = http.StatusUnauthorized
 	}
 	if strings.HasPrefix(r.URL.Path, "/authserver/") && status == http.StatusForbidden {
 		httpapi.JSON(w, status, httpapi.ErrorResponse{Error: "ForbiddenOperationException", ErrorMessage: "Invalid credentials or token."})
+		return
+	}
+	if errors.Is(err, site.ErrFunds) {
+		httpapi.JSON(w, status, httpapi.ErrorResponse{Error: "InsufficientPoints", ErrorMessage: "Insufficient points."})
+		return
+	}
+	if errors.Is(err, site.ErrCooldown) {
+		httpapi.JSON(w, status, httpapi.ErrorResponse{Error: "AlreadySigned", ErrorMessage: "Check-in cooldown is active."})
 		return
 	}
 	httpapi.Error(w, status)
@@ -98,6 +109,8 @@ func (h *Handler) Authorized(kind model.TokenKind, next http.HandlerFunc) http.H
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
+	h.registerSite(mux)
+	h.registerExternal(mux)
 	mux.HandleFunc("GET /api/admin/audit", h.Authorized(model.TokenWeb, func(w http.ResponseWriter, r *http.Request) {
 		if Current(r.Context()).Account.Permission < model.PermissionAdmin {
 			h.failure(w, r, ErrDenied)

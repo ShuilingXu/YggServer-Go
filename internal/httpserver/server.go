@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/ShuilingXu/YggServer-Go/internal/config"
@@ -20,6 +22,7 @@ import (
 	"github.com/ShuilingXu/YggServer-Go/internal/identity"
 	"github.com/ShuilingXu/YggServer-Go/internal/mailer"
 	"github.com/ShuilingXu/YggServer-Go/internal/redisstore"
+	"github.com/ShuilingXu/YggServer-Go/internal/site"
 	"github.com/ShuilingXu/YggServer-Go/internal/skin"
 	"github.com/ShuilingXu/YggServer-Go/migrations"
 )
@@ -79,6 +82,7 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 	accountHandler := &identity.Handler{Service: accounts, Redis: cache, Logger: logger}
 	if accounts != nil {
 		accounts.Redis = cache
+		accounts.External = &identity.ExternalLogin{PublicURL: c.PublicURL, Secret: c.OIDCClientSecret}
 		if c.SMTPAddr != "" {
 			accounts.Recovery = &identity.Recovery{Send: (mailer.SMTP{Addr: c.SMTPAddr, Mode: c.SMTPMode, User: c.SMTPUser, Password: c.SMTPPassword, From: c.MailFrom}).Send, PublicURL: c.PublicURL, VerificationTTL: c.VerificationTTL, ResetTTL: c.ResetTTL}
 		}
@@ -101,7 +105,22 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 			httpapi.Error(w, http.StatusMethodNotAllowed)
 			return
 		}
-		httpapi.JSON(w, http.StatusOK, metadata)
+		current := metadata
+		if db != nil {
+			policy, err := site.Read(r.Context(), db)
+			if err != nil {
+				httpapi.Error(w, 503)
+				return
+			}
+			current.Meta.ServerName = policy.Name
+			current.SkinDomains = append([]string{}, metadata.SkinDomains...)
+			for _, d := range strings.Fields(policy.SkinDomains) {
+				if !slices.Contains(current.SkinDomains, d) {
+					current.SkinDomains = append(current.SkinDomains, d)
+				}
+			}
+		}
+		httpapi.JSON(w, http.StatusOK, current)
 	})
 	for _, path := range []string{"/healthz", "/readyz"} {
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +178,13 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 			if path == "/" || path == "" {
 				path = "[unmatched]"
 			}
-			logger.LogAttrs(r.Context(), slog.LevelInfo, "request",
+			level := slog.LevelInfo
+			if recorded.status >= 500 {
+				level = slog.LevelError
+			} else if recorded.status >= 400 {
+				level = slog.LevelWarn
+			}
+			logger.LogAttrs(r.Context(), level, "request",
 				slog.String("request_id", requestID), slog.String("method", r.Method), slog.String("path", path),
 				slog.Int("status", recorded.status), slog.Int64("dur_ms", time.Since(start).Milliseconds()),
 				slog.String("ip_hash", hex.EncodeToString(digest.Sum(nil))))

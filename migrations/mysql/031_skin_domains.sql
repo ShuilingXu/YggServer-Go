@@ -1,0 +1,1 @@
+ALTER TABLE site_settings ADD COLUMN skin_domains VARCHAR(2000) NOT NULL DEFAULT '';

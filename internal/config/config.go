@@ -13,28 +13,29 @@ import (
 )
 
 type Config struct {
-	ListenAddr      string
-	PublicURL       string
-	ServerName      string
-	SkinDomains     []string
-	SigningKeyFile  string
-	DatabaseDriver  string
-	DatabaseDSN     string
-	WebDir          string
-	RedisURL        string
-	RedisPrefix     string
-	TexturesDir     string
-	UUIDStrategy    model.UUIDStrategy
-	SMTPAddr        string
-	SMTPMode        string
-	SMTPUser        string
-	SMTPPassword    string
-	MailFrom        string
-	VerificationTTL time.Duration
-	ResetTTL        time.Duration
-	UploadLimit     int
-	UploadMaxBytes  int64
-	StorageQuota    int64
+	OIDCClientSecret string
+	ListenAddr       string
+	PublicURL        string
+	ServerName       string
+	SkinDomains      []string
+	SigningKeyFile   string
+	DatabaseDriver   string
+	DatabaseDSN      string
+	WebDir           string
+	RedisURL         string
+	RedisPrefix      string
+	TexturesDir      string
+	UUIDStrategy     model.UUIDStrategy
+	SMTPAddr         string
+	SMTPMode         string
+	SMTPUser         string
+	SMTPPassword     string
+	MailFrom         string
+	VerificationTTL  time.Duration
+	ResetTTL         time.Duration
+	UploadLimit      int
+	UploadMaxBytes   int64
+	StorageQuota     int64
 }
 
 func Load() (Config, error) {
@@ -90,6 +91,7 @@ func Load() (Config, error) {
 	default:
 		return Config{}, fmt.Errorf("invalid YGG_UUID_STRATEGY")
 	}
+	c.OIDCClientSecret = os.Getenv("YGG_OIDC_CLIENT_SECRET")
 	c.SMTPAddr = os.Getenv("YGG_SMTP_ADDR")
 	c.SMTPMode = value("YGG_SMTP_MODE", "starttls")
 	c.SMTPUser = os.Getenv("YGG_SMTP_USER")

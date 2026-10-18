@@ -188,10 +188,19 @@ const (
 | `textures.state` | 材质审核状态，与隐私独立 | `0` 正常 / `1` 下架 |
 | `reports.state` | 举报处理状态 | `0` 待处理 / `1` 已处理 / `2` 已驳回 |
 | `reports.dedup_key` | 并发待处理举报唯一约束占位，使用数值主键解除占位，兼容两库无部分唯一索引的差异 | `0` 待处理 / 非零为本条举报自增 ID |
-| `audit_events.action` | 管理审计动作 | `0` 用户管理 / `1` 终端所有者授权 / `2` 材质状态 / `3` 举报处理 |
+| `audit_events.action` | 管理审计动作 | `0` 用户管理 / `1` 终端所有者授权 / `2` 材质状态 / `3` 举报处理 / `4` 站点配置 / `5` OAuth 应用管理 / `6` 外部身份绑定 / `7` 外部身份解绑 |
 | `audit_events.result` | 成功提交的动作结果 | `0` 已执行 / `1` 举报已驳回 |
 | `audit_events.target_state` | 目标状态值；动作决定账号或材质语义 | `-1` 未修改或历史未知 / `0` 正常 / `1` 封禁或下架 / `2` 账号注销 |
 | `audit_events.target_permission` | 目标权限值 | `-1` 未修改或历史未知 / `0` 普通 / `1` 管理员 / `2` 所有者 |
+| `site_settings.registration` | 注册开关 | `0` 关闭 / `1` 开启 |
+| `site_settings.email_mode` | 邮箱域名精确匹配规则 | `0` 不限制 / `1` 白名单 / `2` 黑名单 |
+| `site_settings.single_session` | 同类 Web/游戏会话互斥 | `0` 关闭 / `1` 下次登录时撤销该类旧会话 |
+| `site_settings.sign_enabled` | 签到开关 | `0` 关闭 / `1` 开启 |
+| `site_settings.oauth_enabled` | 本站 OAuth2 授权服务开关 | `0` 关闭 / `1` 开启 |
+| `site_settings.oidc_enabled` | 第三方 OIDC 登录开关 | `0` 关闭 / `1` 开启 |
+| `oauth_grants.scope` | OAuth 权限位；API 仍用协议字符串 | `0` 无权限 / `1` User.Read / `2` Player.Read / `3` 两者 |
+| `point_entries.kind` | 积分流水来源 | `0` 初始 / `1` 签到 / `2` 新增角色 / `3` 上传 / `4` 收藏 / `5` 转私有补差价 |
+
 
 ### 4.3 表设计
 - 主键用自增 `BIGINT`；对外暴露用 UUID 字符串列（单列唯一索引）。
@@ -273,6 +282,7 @@ Yggdrasil 客户端兼容优先：路径、字段名、状态码、错误码按�
 - 基底端点：`GET /healthz` 存活检查；`GET /readyz` 检查数据库与迁移（未配置、未迁移或异常均 503）；可选 `GET /web/` 托管 React 构建产物，本轮为空白基底。
 - 皮肤站原生端点：`/api/auth/register`、`/api/auth/login`、`/api/auth/logout`；`/api/account`、`/api/account/password`、`/api/account/email`；`/api/admin/users`、`/api/admin/users/{uuid}`；`/api/players`、`/api/players/{uuid}`、`/api/players/{uuid}/textures`；`/api/textures`、`/api/textures/mine`、`/api/textures/{uuid}`、`/api/textures/{uuid}/file`；`/api/closet`、`/api/closet/{uuid}`；`/textures/{hash}`。方法、字段与权限见 README；不兼容 BS 的 PHP 前端接口。
 - 新增原生端点：`POST /api/account/verification`、`POST /api/auth/forgot-password`、`POST /api/auth/verify-email`、`POST /api/auth/reset-password`、`GET /account-recovery`；`GET /api/textures/{uuid}/avatar`、`GET /api/textures/{uuid}/preview`、`POST /api/textures/{uuid}/reports`；`GET /api/admin/reports`、`PUT /api/admin/reports/{uuid}`、`PUT /api/admin/textures/{uuid}/state`、`GET /api/admin/audit`。字段、状态码与权限见 README。
+- 站点运营端点：`GET /api/site`、`PUT /api/admin/site`、`GET /api/account/points`、`POST /api/account/sign`；`GET/POST /api/admin/oauth/clients`、`DELETE /api/admin/oauth/clients/{uuid}`、`GET /api/oauth/client`、`POST /api/oauth/authorize`、`GET /oauth/authorize`、`POST /oauth/token`、`GET /oauth/userinfo`、`GET /oauth/players`、`GET /api/account/oauth`、`DELETE /api/account/oauth/{uuid}`；`POST /api/auth/oidc/start`、`POST /api/auth/oidc/complete`、`GET /oidc/callback`、`GET /api/account/oidc`、`POST /api/account/oidc/start`、`DELETE /api/account/oidc/{uuid}`。字段与权限见 README。
 - 破坏性变更（字段改名、语义变化）必须先问用户。
 
 ### 6.3 安全底线
@@ -424,6 +434,7 @@ $dir = Get-ChildItem "$env:LOCALAPPDATA\GitHubDesktop" -Directory |
 | 2026-10-17 | PowerShell 7 的 ConvertFrom-Json 自动解析时间 | ISO 时间已变成 DateTime，再按字符串 Parse 会受区域格式影响而失败 | 直接使用 DateTime 并转 UTC，不把对象先隐式转回区域字符串 |
 | 2026-10-17 | Start-Process 返回不代表依赖已就绪 | Redis 尚未监听时启动应用会退出，验收代理显示 502，即使构建测试通过 | 先确认 Redis PING 就绪再启动应用；测试故障恢复时保持应用运行，仅重启 Redis |
 | 2026-10-17 | 恢复凭据长度误判 | `crypto/rand.Text()` 返回 26 位，新增校验误要求 32 位，构建测试通过但浏览器验证邮件返回 403 | 长度边界与生成器一致，并通过实际邮件发送、一次性消费路径验收 |
+| 2026-10-18 | 新审计动作未扩展旧 CHECK | 编译测试通过但浏览器保存站点配置返回 500 | 新增两库前向迁移扩展动作约束；新增动作时同时检查数据库约束与前端映射 |
 |  |  |  |  |
 
 ---

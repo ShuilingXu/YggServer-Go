@@ -83,3 +83,21 @@ func (s *Store) Allow(ctx context.Context, identity string, limit int, window ti
 	}
 	return n <= int64(limit), nil
 }
+
+func (s *Store) SaveOIDC(ctx context.Context, state, value string) error {
+	if err := s.client.Set(ctx, s.key("oidc", state), value, 10*time.Minute).Err(); err != nil {
+		return fmt.Errorf("external login storage unavailable")
+	}
+	return nil
+}
+
+func (s *Store) ConsumeOIDC(ctx context.Context, state string) (string, error) {
+	value, err := s.client.GetDel(ctx, s.key("oidc", state)).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("external login storage unavailable")
+	}
+	return value, nil
+}

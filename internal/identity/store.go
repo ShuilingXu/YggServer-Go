@@ -11,6 +11,7 @@ import (
 	"github.com/ShuilingXu/YggServer-Go/internal/audit"
 	"github.com/ShuilingXu/YggServer-Go/internal/database"
 	"github.com/ShuilingXu/YggServer-Go/internal/model"
+	"github.com/ShuilingXu/YggServer-Go/internal/site"
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -58,20 +59,37 @@ func (s *Store) Register(ctx context.Context, a Account, name string) error {
 		return storeError(err)
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, s.q("INSERT INTO accounts(uuid,email,password_hash,created_at) VALUES(?,?,?,?)"), a.UUID, a.Email, a.PasswordHash, a.CreatedAt)
+	policy, err := site.Read(ctx, tx)
 	if err != nil {
-		return storeError(err)
+		return err
+	}
+	if policy.Registration != 1 || !policy.AllowsEmail(a.Email) {
+		return ErrDenied
+	}
+	if _, err := s.createAccount(ctx, tx, a, name, policy); err != nil {
+		return err
+	}
+	return storeError(tx.Commit())
+}
+
+func (s *Store) createAccount(ctx context.Context, tx *sql.Tx, a Account, name string, policy site.Settings) (int64, error) {
+	_, err := tx.ExecContext(ctx, s.q("INSERT INTO accounts(uuid,email,password_hash,created_at,verified) VALUES(?,?,?,?,?)"), a.UUID, a.Email, a.PasswordHash, a.CreatedAt, a.Verified)
+	if err != nil {
+		return 0, storeError(err)
 	}
 	var id int64
 	err = tx.QueryRowContext(ctx, s.q("SELECT id FROM accounts WHERE uuid=?"), a.UUID).Scan(&id)
 	if err != nil {
-		return storeError(err)
+		return 0, storeError(err)
 	}
 	_, err = tx.ExecContext(ctx, s.q("INSERT INTO players(uuid,account_id,name,created_at,updated_at,uuid_strategy) VALUES(?,?,?,?,?,?)"), PlayerUUID(name, s.UUIDStrategy), id, name, a.CreatedAt, a.CreatedAt, s.UUIDStrategy)
 	if err != nil {
-		return storeError(err)
+		return 0, storeError(err)
 	}
-	return storeError(tx.Commit())
+	if err := site.Change(ctx, tx, s.Dialect, id, policy.InitialPoints, site.PointInitial, a.CreatedAt); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 func (s *Store) Profiles(ctx context.Context, accountID int64) ([]Profile, error) {
@@ -129,6 +147,15 @@ func (s *Store) Issue(ctx context.Context, t Token, oldHash string, now time.Tim
 	_, err = tx.ExecContext(ctx, s.q("DELETE FROM tokens WHERE account_id=? AND refresh_until<=?"), a.ID, now)
 	if err != nil {
 		return storeError(err)
+	}
+	policy, err := site.Read(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if policy.SingleSession == 1 {
+		if _, err := tx.ExecContext(ctx, s.q("DELETE FROM tokens WHERE account_id=? AND kind=?"), a.ID, t.Kind); err != nil {
+			return storeError(err)
+		}
 	}
 	var count int
 	err = tx.QueryRowContext(ctx, s.q("SELECT COUNT(*) FROM tokens WHERE account_id=?"), a.ID).Scan(&count)
@@ -323,8 +350,15 @@ func (s *Store) SavePlayer(ctx context.Context, a Account, uuid, name string, re
 		if err != nil {
 			return storeError(err)
 		}
-		if count >= 20 {
+		policy, err := site.Read(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if count >= policy.MaxPlayers {
 			return ErrDenied
+		}
+		if err := site.Change(ctx, tx, s.Dialect, a.ID, -policy.PlayerCost, site.PointPlayer, now); err != nil {
+			return err
 		}
 		_, err = tx.ExecContext(ctx, s.q("INSERT INTO players(uuid,account_id,name,created_at,updated_at,uuid_strategy) VALUES(?,?,?,?,?,?)"), PlayerUUID(name, s.UUIDStrategy), a.ID, name, now, now, s.UUIDStrategy)
 	} else {

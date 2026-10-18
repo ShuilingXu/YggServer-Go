@@ -85,6 +85,10 @@ const (
 	AuditOwnerGrant      AuditAction = 1
 	AuditTextureModerate AuditAction = 2
 	AuditReportResolve   AuditAction = 3
+	AuditSiteSettings    AuditAction = 4
+	AuditOAuthClient     AuditAction = 5
+	AuditExternalBind    AuditAction = 6
+	AuditExternalUnbind  AuditAction = 7
 )
 
 type AuditResult int16

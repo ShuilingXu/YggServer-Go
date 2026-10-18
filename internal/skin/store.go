@@ -13,6 +13,7 @@ import (
 
 	"github.com/ShuilingXu/YggServer-Go/internal/database"
 	"github.com/ShuilingXu/YggServer-Go/internal/model"
+	"github.com/ShuilingXu/YggServer-Go/internal/site"
 )
 
 type Store struct {
@@ -139,6 +140,13 @@ func (s *Store) Upload(ctx context.Context, conn *sql.Conn, t Texture, playerUUI
 	if err := s.lockAccount(ctx, tx, t.AccountID); err != nil {
 		return err
 	}
+	policy, err := site.Read(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := site.Change(ctx, tx, s.Dialect, t.AccountID, -policy.TextureCost(t.Size, t.Public), site.PointUpload, t.CreatedAt); err != nil {
+		return err
+	}
 	if s.Quota > 0 {
 		var used int64
 		if err := tx.QueryRowContext(ctx, s.q("SELECT COALESCE(SUM(size_bytes),0) FROM textures WHERE account_id=?"), t.AccountID).Scan(&used); err != nil {
@@ -181,7 +189,7 @@ func (s *Store) Upload(ctx context.Context, conn *sql.Conn, t Texture, playerUUI
 	return storageError(tx.Commit())
 }
 
-func (s *Store) Edit(ctx context.Context, accountID int64, uuid, name string, kind model.TextureType, public int16) error {
+func (s *Store) Edit(ctx context.Context, accountID int64, uuid, name string, kind model.TextureType, public int16, now time.Time) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return storageError(err)
@@ -189,6 +197,20 @@ func (s *Store) Edit(ctx context.Context, accountID int64, uuid, name string, ki
 	defer tx.Rollback()
 	if err := s.lockAccount(ctx, tx, accountID); err != nil {
 		return err
+	}
+	old, err := scan(tx.QueryRowContext(ctx, s.q("SELECT "+columns+" FROM textures t WHERE t.uuid=? AND t.account_id=? FOR UPDATE"), uuid, accountID))
+	if err != nil {
+		return err
+	}
+	if old.Public == 1 && public == 0 {
+		policy, err := site.Read(ctx, tx)
+		if err != nil {
+			return err
+		}
+		delta := policy.TextureCost(old.Size, 0) - policy.TextureCost(old.Size, 1)
+		if err := site.Change(ctx, tx, s.Dialect, accountID, -delta, site.PointPrivacy, now); err != nil {
+			return err
+		}
 	}
 	result, err := tx.ExecContext(ctx, s.q("UPDATE textures SET name=?,type=?,is_public=? WHERE uuid=? AND account_id=?"), name, kind, public, uuid, accountID)
 	if err != nil {
@@ -322,6 +344,21 @@ func (s *Store) Closet(ctx context.Context, accountID int64, uuid, name string, 
 	}
 	if !remove && t.Public != 1 && t.AccountID != accountID {
 		return ErrDenied
+	}
+	if !remove {
+		var count int
+		if err := tx.QueryRowContext(ctx, s.q("SELECT COUNT(*) FROM closet WHERE account_id=? AND texture_id=?"), accountID, t.ID).Scan(&count); err != nil {
+			return storageError(err)
+		}
+		if count == 0 {
+			policy, err := site.Read(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if err := site.Change(ctx, tx, s.Dialect, accountID, -policy.ClosetCost, site.PointCloset, now); err != nil {
+				return err
+			}
+		}
 	}
 	_, err = tx.ExecContext(ctx, s.q("DELETE FROM closet WHERE account_id=? AND texture_id=?"), accountID, t.ID)
 	if err != nil {

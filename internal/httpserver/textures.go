@@ -15,6 +15,7 @@ import (
 	"github.com/ShuilingXu/YggServer-Go/internal/httpapi"
 	"github.com/ShuilingXu/YggServer-Go/internal/identity"
 	"github.com/ShuilingXu/YggServer-Go/internal/model"
+	"github.com/ShuilingXu/YggServer-Go/internal/site"
 	"github.com/ShuilingXu/YggServer-Go/internal/skin"
 )
 
@@ -24,7 +25,7 @@ func registerTextures(mux *http.ServeMux, c config.Config, key *rsa.PrivateKey, 
 		switch {
 		case errors.Is(err, skin.ErrQuota):
 			status = 413
-		case errors.Is(err, skin.ErrConflict):
+		case errors.Is(err, site.ErrFunds), errors.Is(err, skin.ErrConflict):
 			status = 409
 		case errors.Is(err, skin.ErrRateLimited):
 			status = 429
@@ -37,8 +38,10 @@ func registerTextures(mux *http.ServeMux, c config.Config, key *rsa.PrivateKey, 
 			status = 404
 		case errors.Is(err, skin.ErrUnavailable):
 			status = 503
-		default:
-			logger.ErrorContext(r.Context(), "texture operation failed", "request_id", w.Header().Get("X-Request-ID"))
+		}
+		if errors.Is(err, site.ErrFunds) {
+			httpapi.JSON(w, status, httpapi.ErrorResponse{Error: "InsufficientPoints", ErrorMessage: "Insufficient points."})
+			return
 		}
 		httpapi.Error(w, status)
 	}

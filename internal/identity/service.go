@@ -9,10 +9,12 @@ import (
 
 	"github.com/ShuilingXu/YggServer-Go/internal/model"
 	"github.com/ShuilingXu/YggServer-Go/internal/redisstore"
+	"github.com/ShuilingXu/YggServer-Go/internal/site"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type Service struct {
+	External  *ExternalLogin
 	Store     *Store
 	Now       func() time.Time
 	Redis     *redisstore.Store
@@ -32,6 +34,13 @@ func (s *Service) Register(ctx context.Context, email, password, name string) er
 	email, err := Email(email)
 	if err != nil || !ValidPassword(password) || !ValidPlayer(name) {
 		return ErrInvalid
+	}
+	policy, err := site.Read(ctx, s.Store.DB)
+	if err != nil {
+		return err
+	}
+	if policy.Registration != 1 || !policy.AllowsEmail(email) {
+		return ErrDenied
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -207,6 +216,13 @@ func (s *Service) UpdateAccount(ctx context.Context, t Token, current, next, ema
 		email, err := Email(email)
 		if err != nil {
 			return err
+		}
+		policy, err := site.Read(ctx, s.Store.DB)
+		if err != nil {
+			return err
+		}
+		if !policy.AllowsEmail(email) {
+			return ErrDenied
 		}
 		return s.Store.UpdateAccount(ctx, t.Account, nil, email, false)
 	}

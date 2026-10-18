@@ -219,7 +219,7 @@ func (s *Service) Edit(ctx context.Context, accountID int64, uuid, name string, 
 	if (t.Type == model.TextureCape) != (kind == model.TextureCape) {
 		return ErrInvalid
 	}
-	return s.Store.Edit(ctx, accountID, uuid, name, kind, public)
+	return s.Store.Edit(ctx, accountID, uuid, name, kind, public, s.Now().UTC())
 }
 
 func ValidHash(hash string) bool {
