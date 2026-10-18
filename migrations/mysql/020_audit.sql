@@ -1,0 +1,8 @@
+CREATE TABLE audit_events (
+ id BIGINT AUTO_INCREMENT PRIMARY KEY,
+ actor_uuid CHAR(32) NOT NULL,
+ target_uuid CHAR(32) NOT NULL,
+ action SMALLINT NOT NULL DEFAULT 0 CHECK(action IN (0,1,2,3)),
+ request_id VARCHAR(64) NOT NULL,
+ created_at DATETIME(3) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

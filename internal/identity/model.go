@@ -14,6 +14,7 @@ import (
 )
 
 var (
+	ErrMail        = errors.New("mail delivery unavailable")
 	ErrCredentials = errors.New("invalid credentials")
 	ErrConflict    = errors.New("account or player already exists")
 	ErrInvalid     = errors.New("invalid input")
@@ -81,3 +82,10 @@ func Email(value string) (string, error) {
 
 func ValidPassword(value string) bool { return len(value) >= 8 && len(value) <= 72 }
 func ValidPlayer(name string) bool    { return playerName.MatchString(name) }
+
+func PlayerUUID(name string, strategy model.UUIDStrategy) string {
+	if strategy == model.UUIDRandom {
+		return model.UUID()
+	}
+	return OfflineUUID(name)
+}

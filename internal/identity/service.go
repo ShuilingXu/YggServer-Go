@@ -16,6 +16,7 @@ type Service struct {
 	Store     *Store
 	Now       func() time.Time
 	Redis     *redisstore.Store
+	Recovery  *Recovery
 	dummyHash []byte
 }
 

@@ -48,3 +48,49 @@ const (
 	TokenWeb       TokenKind = 0
 	TokenYggdrasil TokenKind = 1
 )
+
+type UUIDStrategy int16
+
+const (
+	UUIDOffline UUIDStrategy = 0
+	UUIDRandom  UUIDStrategy = 1
+)
+
+type RecoveryKind int16
+
+const (
+	RecoveryVerify RecoveryKind = 0
+	RecoveryReset  RecoveryKind = 1
+)
+
+type TextureState int16
+
+const (
+	TextureActive TextureState = 0
+	TextureHidden TextureState = 1
+)
+
+type ReportState int16
+
+const (
+	ReportPending  ReportState = 0
+	ReportResolved ReportState = 1
+	ReportRejected ReportState = 2
+)
+
+type AuditAction int16
+
+const (
+	AuditUserManage      AuditAction = 0
+	AuditOwnerGrant      AuditAction = 1
+	AuditTextureModerate AuditAction = 2
+	AuditReportResolve   AuditAction = 3
+)
+
+type AuditResult int16
+
+const (
+	AuditApplied   AuditResult = 0
+	AuditDismissed AuditResult = 1
+	AuditUnchanged int16       = -1
+)

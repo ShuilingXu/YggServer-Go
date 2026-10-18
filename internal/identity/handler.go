@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ShuilingXu/YggServer-Go/internal/audit"
 	"github.com/ShuilingXu/YggServer-Go/internal/httpapi"
 	"github.com/ShuilingXu/YggServer-Go/internal/model"
 	"github.com/ShuilingXu/YggServer-Go/internal/redisstore"
@@ -30,7 +31,7 @@ func (h *Handler) failure(w http.ResponseWriter, r *http.Request, err error) {
 		status = http.StatusConflict
 	case errors.Is(err, ErrInvalid):
 		status = http.StatusBadRequest
-	case errors.Is(err, ErrUnavailable):
+	case errors.Is(err, ErrUnavailable), errors.Is(err, ErrMail):
 		status = http.StatusServiceUnavailable
 	case errors.Is(err, ErrRateLimited):
 		status = http.StatusTooManyRequests
@@ -97,6 +98,71 @@ func (h *Handler) Authorized(kind model.TokenKind, next http.HandlerFunc) http.H
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/admin/audit", h.Authorized(model.TokenWeb, func(w http.ResponseWriter, r *http.Request) {
+		if Current(r.Context()).Account.Permission < model.PermissionAdmin {
+			h.failure(w, r, ErrDenied)
+			return
+		}
+		offset := 0
+		if raw := r.URL.Query().Get("offset"); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n < 0 {
+				h.failure(w, r, ErrInvalid)
+				return
+			}
+			offset = n
+		}
+		events, err := audit.List(r.Context(), h.Service.Store.DB, h.Service.Store.Dialect, offset)
+		if err != nil {
+			h.failure(w, r, err)
+			return
+		}
+		httpapi.JSON(w, 200, events)
+	}))
+
+	mux.HandleFunc("POST /api/account/verification", h.Authorized(model.TokenWeb, h.limited(func(w http.ResponseWriter, r *http.Request) {
+		err := h.Service.RequestRecovery(r.Context(), Current(r.Context()).Account.Email, model.RecoveryVerify)
+		if err != nil {
+			h.failure(w, r, err)
+			return
+		}
+		w.WriteHeader(202)
+	})))
+	mux.HandleFunc("POST /api/auth/forgot-password", h.limited(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Email string }
+		if !httpapi.Decode(w, r, &body) {
+			return
+		}
+		err := h.Service.RequestRecovery(r.Context(), body.Email, model.RecoveryReset)
+		// 投递失败也维持受理响应，避免通过 SMTP 错误枚举已注册邮箱。
+		if err != nil && !errors.Is(err, ErrInvalid) && !errors.Is(err, ErrUnavailable) {
+			h.Logger.ErrorContext(r.Context(), "recovery mail delivery failed", "request_id", w.Header().Get("X-Request-ID"))
+			err = nil
+		}
+		if err != nil {
+			h.failure(w, r, err)
+			return
+		}
+		w.WriteHeader(202)
+	}))
+	for _, route := range []string{"POST /api/auth/verify-email", "POST /api/auth/reset-password"} {
+		mux.HandleFunc(route, h.limited(func(w http.ResponseWriter, r *http.Request) {
+			var body struct{ Token, NewPassword string }
+			if !httpapi.Decode(w, r, &body) {
+				return
+			}
+			kind := model.RecoveryVerify
+			if r.URL.Path == "/api/auth/reset-password" {
+				kind = model.RecoveryReset
+			}
+			if err := h.Service.CompleteRecovery(r.Context(), body.Token, body.NewPassword, kind); err != nil {
+				h.failure(w, r, err)
+				return
+			}
+			w.WriteHeader(204)
+		}))
+	}
+
 	mux.HandleFunc("GET /api/players", h.Authorized(model.TokenWeb, func(w http.ResponseWriter, r *http.Request) {
 		profiles, err := h.Service.Store.Profiles(r.Context(), Current(r.Context()).Account.ID)
 		if err != nil {
@@ -230,7 +296,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			h.failure(w, r, ErrInvalid)
 			return
 		}
-		if err := h.Service.Store.Manage(r.Context(), Current(r.Context()).Account.ID, r.PathValue("uuid"), body.State, body.Permission); err != nil {
+		if err := h.Service.Store.Manage(r.Context(), Current(r.Context()).Account.ID, r.PathValue("uuid"), body.State, body.Permission, w.Header().Get("X-Request-ID"), h.Service.Now()); err != nil {
 			h.failure(w, r, err)
 			return
 		}

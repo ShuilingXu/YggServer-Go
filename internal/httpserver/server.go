@@ -18,6 +18,7 @@ import (
 	"github.com/ShuilingXu/YggServer-Go/internal/config"
 	"github.com/ShuilingXu/YggServer-Go/internal/httpapi"
 	"github.com/ShuilingXu/YggServer-Go/internal/identity"
+	"github.com/ShuilingXu/YggServer-Go/internal/mailer"
 	"github.com/ShuilingXu/YggServer-Go/internal/redisstore"
 	"github.com/ShuilingXu/YggServer-Go/internal/skin"
 	"github.com/ShuilingXu/YggServer-Go/migrations"
@@ -70,7 +71,7 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 	mux := http.NewServeMux()
 	var accounts *identity.Service
 	if db != nil {
-		accounts, err = identity.New(&identity.Store{DB: db, Dialect: c.DatabaseDriver}, time.Now)
+		accounts, err = identity.New(&identity.Store{DB: db, Dialect: c.DatabaseDriver, UUIDStrategy: c.UUIDStrategy}, time.Now)
 		if err != nil {
 			return nil, err
 		}
@@ -78,11 +79,20 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 	accountHandler := &identity.Handler{Service: accounts, Redis: cache, Logger: logger}
 	if accounts != nil {
 		accounts.Redis = cache
+		if c.SMTPAddr != "" {
+			accounts.Recovery = &identity.Recovery{Send: (mailer.SMTP{Addr: c.SMTPAddr, Mode: c.SMTPMode, User: c.SMTPUser, Password: c.SMTPPassword, From: c.MailFrom}).Send, PublicURL: c.PublicURL, VerificationTTL: c.VerificationTTL, ResetTTL: c.ResetTTL}
+		}
 	}
 	accountHandler.RegisterRoutes(mux)
+	mux.HandleFunc("GET /account-recovery", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'sha256-C/k0o3azr2155EWX6kTyaKIYDvT8+ZLVF9YY10CI1Fc='; connect-src 'self'; form-action 'none'; base-uri 'none'")
+		_, _ = w.Write([]byte(recoveryPage))
+	})
 	var textures *skin.Service
 	if db != nil {
-		textures = &skin.Service{Store: &skin.Store{DB: db, Dialect: c.DatabaseDriver}, Dir: c.TexturesDir, Now: time.Now}
+		textures = &skin.Service{Redis: cache, UploadLimit: c.UploadLimit, Store: &skin.Store{DB: db, Dialect: c.DatabaseDriver, Quota: c.StorageQuota}, MaxBytes: c.UploadMaxBytes, Dir: c.TexturesDir, Now: time.Now}
 	}
 	registerTextures(mux, c, key, textures, accountHandler, logger)
 	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) {

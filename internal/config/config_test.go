@@ -11,6 +11,12 @@ func TestDeploymentConfiguration(t *testing.T) {
 		env   map[string]string
 		valid bool
 	}{
+		{"invalid uuid strategy", map[string]string{"YGG_UUID_STRATEGY": "v5"}, false},
+		{"valid random uuid", map[string]string{"YGG_UUID_STRATEGY": "v4"}, true},
+		{"negative storage quota", map[string]string{"YGG_STORAGE_QUOTA_BYTES": "-1"}, false},
+		{"oversized upload", map[string]string{"YGG_UPLOAD_MAX_BYTES": "9999999999"}, false},
+		{"remote plain smtp", map[string]string{"YGG_SMTP_ADDR": "smtp.example.com:25", "YGG_SMTP_MODE": "plain", "YGG_PUBLIC_URL": "https://skin.example.com", "YGG_MAIL_FROM": "noreply@example.com"}, false},
+		{"expired reset window", map[string]string{"YGG_RESET_TTL": "-1h"}, false},
 		{"cdn hostname", map[string]string{"YGG_SKIN_DOMAINS": "textures.example.com,.example.net"}, true},
 		{"public origin", map[string]string{"YGG_PUBLIC_URL": "https://skin.example.com/"}, true},
 		{"mysql", map[string]string{"YGG_DATABASE_DRIVER": "mysql"}, true},
@@ -24,7 +30,7 @@ func TestDeploymentConfiguration(t *testing.T) {
 		{"url instead of domain", map[string]string{"YGG_SKIN_DOMAINS": "https://textures.example.com"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, key := range []string{"YGG_LISTEN_ADDR", "YGG_PUBLIC_URL", "YGG_SERVER_NAME", "YGG_SKIN_DOMAINS", "YGG_SIGNING_KEY_FILE", "YGG_DATABASE_DRIVER", "YGG_DATABASE_DSN", "YGG_WEB_DIR", "YGG_REDIS_URL", "YGG_REDIS_PREFIX"} {
+			for _, key := range []string{"YGG_LISTEN_ADDR", "YGG_PUBLIC_URL", "YGG_SERVER_NAME", "YGG_SKIN_DOMAINS", "YGG_SIGNING_KEY_FILE", "YGG_DATABASE_DRIVER", "YGG_DATABASE_DSN", "YGG_WEB_DIR", "YGG_REDIS_URL", "YGG_REDIS_PREFIX", "YGG_UUID_STRATEGY", "YGG_STORAGE_QUOTA_BYTES", "YGG_UPLOAD_MAX_BYTES", "YGG_UPLOADS_PER_MINUTE", "YGG_SMTP_ADDR", "YGG_SMTP_MODE", "YGG_SMTP_USER", "YGG_SMTP_PASSWORD", "YGG_MAIL_FROM", "YGG_RESET_TTL", "YGG_VERIFICATION_TTL"} {
 				t.Setenv(key, "")
 			}
 			for key, value := range tc.env {

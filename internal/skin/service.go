@@ -18,9 +18,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/ShuilingXu/YggServer-Go/internal/model"
+	"github.com/ShuilingXu/YggServer-Go/internal/redisstore"
 )
 
 var (
+	ErrQuota       = errors.New("texture quota exceeded")
+	ErrRateLimited = errors.New("upload rate exceeded")
+	ErrConflict    = errors.New("pending report already exists")
 	ErrInvalid     = errors.New("invalid texture")
 	ErrDenied      = errors.New("texture access denied")
 	ErrMissing     = errors.New("texture not found")
@@ -28,24 +32,28 @@ var (
 )
 
 type Texture struct {
-	ID        int64             `json:"-"`
-	UUID      string            `json:"id"`
-	AccountID int64             `json:"-"`
-	Name      string            `json:"name"`
-	Type      model.TextureType `json:"type"`
-	Hash      string            `json:"hash"`
-	Size      int64             `json:"sizeBytes"`
-	Width     int               `json:"width"`
-	Height    int               `json:"height"`
-	Public    int16             `json:"public"`
-	CreatedAt time.Time         `json:"createdAt"`
-	ItemName  string            `json:"itemName,omitempty"`
+	ID        int64              `json:"-"`
+	UUID      string             `json:"id"`
+	AccountID int64              `json:"-"`
+	Name      string             `json:"name"`
+	Type      model.TextureType  `json:"type"`
+	Hash      string             `json:"hash"`
+	Size      int64              `json:"sizeBytes"`
+	Width     int                `json:"width"`
+	Height    int                `json:"height"`
+	Public    int16              `json:"public"`
+	CreatedAt time.Time          `json:"createdAt"`
+	State     model.TextureState `json:"state"`
+	ItemName  string             `json:"itemName,omitempty"`
 }
 
 type Service struct {
-	Store *Store
-	Dir   string
-	Now   func() time.Time
+	Store       *Store
+	Dir         string
+	Now         func() time.Time
+	MaxBytes    int64
+	Redis       *redisstore.Store
+	UploadLimit int
 }
 
 func ValidDimensions(kind model.TextureType, w, h int) bool {
@@ -69,11 +77,15 @@ func ValidDimensions(kind model.TextureType, w, h int) bool {
 }
 
 func Sanitize(reader io.Reader, kind model.TextureType) ([]byte, int, int, error) {
-	data, err := io.ReadAll(io.LimitReader(reader, (1<<20)+1))
+	return sanitize(reader, kind, 1<<20)
+}
+
+func sanitize(reader io.Reader, kind model.TextureType, maxBytes int64) ([]byte, int, int, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("read texture: %w", err)
 	}
-	if len(data) > 1<<20 {
+	if int64(len(data)) > maxBytes {
 		return nil, 0, 0, ErrInvalid
 	}
 	config, err := png.DecodeConfig(bytes.NewReader(data))
@@ -106,7 +118,23 @@ func (s *Service) Upload(ctx context.Context, accountID int64, name string, kind
 	if !validName(name) || public < 0 || public > 1 {
 		return Texture{}, ErrInvalid
 	}
-	data, w, h, err := Sanitize(reader, kind)
+	if s.UploadLimit > 0 {
+		if s.Redis == nil {
+			return Texture{}, ErrUnavailable
+		}
+		allowed, err := s.Redis.Allow(ctx, "texture-upload:"+fmt.Sprint(accountID), s.UploadLimit, time.Minute)
+		if err != nil {
+			return Texture{}, ErrUnavailable
+		}
+		if !allowed {
+			return Texture{}, ErrRateLimited
+		}
+	}
+	maxBytes := s.MaxBytes
+	if maxBytes == 0 {
+		maxBytes = 1 << 20
+	}
+	data, w, h, err := sanitize(reader, kind, maxBytes)
 	if err != nil {
 		return Texture{}, err
 	}
@@ -149,7 +177,7 @@ func (s *Service) Delete(ctx context.Context, accountID int64, uuid string) erro
 	if s.Dir == "" {
 		return ErrUnavailable
 	}
-	t, err := s.Store.Get(ctx, uuid, accountID)
+	t, err := s.Store.Get(ctx, uuid, accountID, true)
 	if err != nil {
 		return err
 	}
@@ -177,7 +205,7 @@ func (s *Service) Edit(ctx context.Context, accountID int64, uuid, name string, 
 	if !validName(name) || public < 0 || public > 1 {
 		return ErrInvalid
 	}
-	t, err := s.Store.Get(ctx, uuid, accountID)
+	t, err := s.Store.Get(ctx, uuid, accountID, false)
 	if err != nil {
 		return err
 	}
@@ -200,4 +228,21 @@ func ValidHash(hash string) bool {
 	}
 	_, err := hex.DecodeString(hash)
 	return err == nil && hash == strings.ToLower(hash)
+}
+
+func (s *Service) Report(ctx context.Context, accountID int64, uuid, reason string) error {
+	if strings.TrimSpace(reason) == "" || utf8.RuneCountInString(reason) > 1000 {
+		return ErrInvalid
+	}
+	if s.Redis == nil {
+		return ErrUnavailable
+	}
+	allowed, err := s.Redis.Allow(ctx, "texture-report:"+fmt.Sprint(accountID), 10, time.Minute)
+	if err != nil {
+		return ErrUnavailable
+	}
+	if !allowed {
+		return ErrRateLimited
+	}
+	return s.Store.Report(ctx, accountID, uuid, reason, s.Now().UTC())
 }

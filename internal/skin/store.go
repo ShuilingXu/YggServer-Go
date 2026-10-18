@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ShuilingXu/YggServer-Go/internal/database"
@@ -17,6 +18,7 @@ import (
 type Store struct {
 	DB      *sql.DB
 	Dialect string
+	Quota   int64
 }
 
 func (s *Store) q(query string) string { return database.Bind(s.Dialect, query) }
@@ -42,22 +44,22 @@ func storageError(err error) error {
 	return fmt.Errorf("texture storage: %w", err)
 }
 
-const columns = "t.id,t.uuid,t.account_id,t.name,t.type,t.hash,t.size_bytes,t.width,t.height,t.is_public,t.created_at"
+const columns = "t.id,t.uuid,t.account_id,t.name,t.type,t.hash,t.size_bytes,t.width,t.height,t.is_public,t.created_at,t.state"
 
 type scanner interface{ Scan(...any) error }
 
 func scan(row scanner, extra ...any) (Texture, error) {
 	var t Texture
-	fields := []any{&t.ID, &t.UUID, &t.AccountID, &t.Name, &t.Type, &t.Hash, &t.Size, &t.Width, &t.Height, &t.Public, &t.CreatedAt}
+	fields := []any{&t.ID, &t.UUID, &t.AccountID, &t.Name, &t.Type, &t.Hash, &t.Size, &t.Width, &t.Height, &t.Public, &t.CreatedAt, &t.State}
 	err := row.Scan(append(fields, extra...)...)
 	return t, storageError(err)
 }
 
-func (s *Store) Get(ctx context.Context, uuid string, accountID int64) (Texture, error) {
-	return scan(s.DB.QueryRowContext(ctx, s.q("SELECT "+columns+" FROM textures t JOIN accounts a ON a.id=t.account_id WHERE t.uuid=? AND a.state=0 AND (t.is_public=1 OR t.account_id=?)"), uuid, accountID))
+func (s *Store) Get(ctx context.Context, uuid string, accountID int64, includeHidden bool) (Texture, error) {
+	return scan(s.DB.QueryRowContext(ctx, s.q("SELECT "+columns+" FROM textures t JOIN accounts a ON a.id=t.account_id WHERE t.uuid=? AND a.state=0 AND (t.state=0 OR (t.account_id=? AND ?=1)) AND (t.is_public=1 OR t.account_id=?)"), uuid, accountID, boolInt(includeHidden), accountID))
 }
 
-func (s *Store) List(ctx context.Context, accountID int64, mode string, offset int) ([]Texture, error) {
+func (s *Store) List(ctx context.Context, accountID int64, mode string, options ListOptions) ([]Texture, int, error) {
 	selected := columns
 	if mode == "closet" {
 		selected += ",c.item_name"
@@ -66,19 +68,48 @@ func (s *Store) List(ctx context.Context, accountID int64, mode string, offset i
 	args := []any{}
 	switch mode {
 	case "mine":
-		query += " WHERE a.state=0 AND t.account_id=?"
+		query += " WHERE a.state=0 AND t.state=0 AND t.account_id=?"
 		args = append(args, accountID)
 	case "closet":
-		query += " JOIN closet c ON c.texture_id=t.id WHERE a.state=0 AND c.account_id=? AND (t.is_public=1 OR t.account_id=?)"
+		query += " JOIN closet c ON c.texture_id=t.id WHERE a.state=0 AND t.state=0 AND c.account_id=? AND (t.is_public=1 OR t.account_id=?)"
 		args = append(args, accountID, accountID)
 	default:
-		query += " WHERE a.state=0 AND t.is_public=1"
+		query += " WHERE a.state=0 AND t.state=0 AND t.is_public=1"
 	}
-	query += " ORDER BY t.id DESC LIMIT 50 OFFSET ?"
-	args = append(args, offset)
+	if options.Query != "" {
+		field := "t.name"
+		if mode == "closet" {
+			field = "c.item_name"
+		}
+		query += " AND LOWER(" + field + ") LIKE ? ESCAPE '!'"
+		escaped := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(strings.ToLower(options.Query))
+		args = append(args, "%"+escaped+"%")
+	}
+	if options.Kind != nil {
+		query += " AND t.type=?"
+		args = append(args, *options.Kind)
+	}
+	if options.Uploader != "" {
+		query += " AND a.uuid=?"
+		args = append(args, options.Uploader)
+	}
+	var total int
+	from := strings.Index(query, " FROM ")
+	if err := s.DB.QueryRowContext(ctx, s.q("SELECT COUNT(*)"+query[from:]), args...).Scan(&total); err != nil {
+		return nil, 0, storageError(err)
+	}
+	order := "t.id DESC"
+	switch options.Sort {
+	case "oldest":
+		order = "t.id ASC"
+	case "name":
+		order = "LOWER(t.name),t.id"
+	}
+	query += " ORDER BY " + order + " LIMIT ? OFFSET ?"
+	args = append(args, options.Limit, options.Offset)
 	rows, err := s.DB.QueryContext(ctx, s.q(query), args...)
 	if err != nil {
-		return nil, storageError(err)
+		return nil, 0, storageError(err)
 	}
 	defer rows.Close()
 	items := []Texture{}
@@ -92,11 +123,11 @@ func (s *Store) List(ctx context.Context, accountID int64, mode string, offset i
 			t, err = scan(rows)
 		}
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		items = append(items, t)
 	}
-	return items, storageError(rows.Err())
+	return items, total, storageError(rows.Err())
 }
 
 func (s *Store) Upload(ctx context.Context, conn *sql.Conn, t Texture, playerUUID string) error {
@@ -107,6 +138,15 @@ func (s *Store) Upload(ctx context.Context, conn *sql.Conn, t Texture, playerUUI
 	defer tx.Rollback()
 	if err := s.lockAccount(ctx, tx, t.AccountID); err != nil {
 		return err
+	}
+	if s.Quota > 0 {
+		var used int64
+		if err := tx.QueryRowContext(ctx, s.q("SELECT COALESCE(SUM(size_bytes),0) FROM textures WHERE account_id=?"), t.AccountID).Scan(&used); err != nil {
+			return storageError(err)
+		}
+		if t.Size > s.Quota || used > s.Quota-t.Size {
+			return ErrQuota
+		}
 	}
 	_, err = tx.ExecContext(ctx, s.q("INSERT INTO textures(uuid,account_id,name,type,hash,size_bytes,width,height,is_public,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)"), t.UUID, t.AccountID, t.Name, t.Type, t.Hash, t.Size, t.Width, t.Height, t.Public, t.CreatedAt)
 	if err != nil {
@@ -276,7 +316,7 @@ func (s *Store) Closet(ctx context.Context, accountID int64, uuid, name string, 
 	if err := s.lockAccount(ctx, tx, accountID); err != nil {
 		return err
 	}
-	t, err := scan(tx.QueryRowContext(ctx, s.q("SELECT "+columns+" FROM textures t JOIN accounts a ON a.id=t.account_id WHERE t.uuid=? AND a.state=0 FOR UPDATE"), uuid))
+	t, err := scan(tx.QueryRowContext(ctx, s.q("SELECT "+columns+" FROM textures t JOIN accounts a ON a.id=t.account_id WHERE t.uuid=? AND a.state=0 AND t.state=0 FOR UPDATE"), uuid))
 	if err != nil {
 		return err
 	}
@@ -311,7 +351,7 @@ func (s *Store) Bind(ctx context.Context, accountID int64, playerUUID string, sk
 		}
 		var id any
 		if *uuid != "" {
-			t, err := scan(tx.QueryRowContext(ctx, s.q("SELECT "+columns+" FROM textures t JOIN accounts a ON a.id=t.account_id WHERE t.uuid=? AND a.state=0 AND (t.account_id=? OR (t.is_public=1 AND EXISTS(SELECT 1 FROM closet WHERE account_id=? AND texture_id=t.id))) FOR UPDATE"), *uuid, accountID, accountID))
+			t, err := scan(tx.QueryRowContext(ctx, s.q("SELECT "+columns+" FROM textures t JOIN accounts a ON a.id=t.account_id WHERE t.uuid=? AND a.state=0 AND t.state=0 AND (t.account_id=? OR (t.is_public=1 AND EXISTS(SELECT 1 FROM closet WHERE account_id=? AND texture_id=t.id))) FOR UPDATE"), *uuid, accountID, accountID))
 			if err != nil {
 				return err
 			}
@@ -344,7 +384,7 @@ func (s *Store) Bind(ctx context.Context, accountID int64, playerUUID string, sk
 
 func (s *Store) CanDistribute(ctx context.Context, hash string) (bool, error) {
 	var exists int
-	err := s.DB.QueryRowContext(ctx, s.q("SELECT 1 FROM textures t JOIN accounts a ON a.id=t.account_id WHERE t.hash=? AND a.state=0 AND (t.is_public=1 OR EXISTS(SELECT 1 FROM players p JOIN accounts pa ON pa.id=p.account_id WHERE pa.state=0 AND (p.skin_id=t.id OR p.cape_id=t.id))) LIMIT 1"), hash).Scan(&exists)
+	err := s.DB.QueryRowContext(ctx, s.q("SELECT 1 FROM textures t JOIN accounts a ON a.id=t.account_id WHERE t.hash=? AND a.state=0 AND t.state=0 AND (t.is_public=1 OR EXISTS(SELECT 1 FROM players p JOIN accounts pa ON pa.id=p.account_id WHERE pa.state=0 AND (p.skin_id=t.id OR p.cape_id=t.id))) LIMIT 1"), hash).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -359,7 +399,7 @@ type Appearance struct {
 
 func (s *Store) Appearance(ctx context.Context, uuid string) (Appearance, error) {
 	var a Appearance
-	err := s.DB.QueryRowContext(ctx, s.q("SELECT p.uuid,p.name,CASE WHEN su.state=0 THEN sk.hash ELSE '' END,CASE WHEN cu.state=0 THEN ca.hash ELSE '' END,COALESCE(sk.type,0) FROM players p JOIN accounts u ON u.id=p.account_id LEFT JOIN textures sk ON sk.id=p.skin_id LEFT JOIN accounts su ON su.id=sk.account_id LEFT JOIN textures ca ON ca.id=p.cape_id LEFT JOIN accounts cu ON cu.id=ca.account_id WHERE p.uuid=? AND u.state=0"), uuid).Scan(&a.Profile.UUID, &a.Profile.Name, &a.SkinHash, &a.CapeHash, &a.Kind)
+	err := s.DB.QueryRowContext(ctx, s.q("SELECT p.uuid,p.name,CASE WHEN su.state=0 AND sk.state=0 THEN sk.hash ELSE '' END,CASE WHEN cu.state=0 AND ca.state=0 THEN ca.hash ELSE '' END,COALESCE(sk.type,0) FROM players p JOIN accounts u ON u.id=p.account_id LEFT JOIN textures sk ON sk.id=p.skin_id LEFT JOIN accounts su ON su.id=sk.account_id LEFT JOIN textures ca ON ca.id=p.cape_id LEFT JOIN accounts cu ON cu.id=ca.account_id WHERE p.uuid=? AND u.state=0"), uuid).Scan(&a.Profile.UUID, &a.Profile.Name, &a.SkinHash, &a.CapeHash, &a.Kind)
 	return a, storageError(err)
 }
 
@@ -385,4 +425,28 @@ func (s *Store) Lookup(ctx context.Context, names []string) ([]model.Profile, er
 		}
 	}
 	return profiles, nil
+}
+
+func (s *Store) Hashes(ctx context.Context) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, "SELECT DISTINCT hash FROM textures ORDER BY hash")
+	if err != nil {
+		return nil, storageError(err)
+	}
+	defer rows.Close()
+	hashes := []string{}
+	for rows.Next() {
+		var hash string
+		if err := rows.Scan(&hash); err != nil {
+			return nil, storageError(err)
+		}
+		hashes = append(hashes, hash)
+	}
+	return hashes, storageError(rows.Err())
+}
+
+func boolInt(value bool) int16 {
+	if value {
+		return 1
+	}
+	return 0
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/ShuilingXu/YggServer-Go/internal/identity"
 	"github.com/ShuilingXu/YggServer-Go/internal/redisstore"
 	"github.com/ShuilingXu/YggServer-Go/internal/signing"
+	"github.com/ShuilingXu/YggServer-Go/internal/skin"
 	"github.com/ShuilingXu/YggServer-Go/migrations"
 	"github.com/redis/go-redis/v9/logging"
 )
@@ -44,8 +46,14 @@ func run(logger *slog.Logger) error {
 	keyPath := flag.String("generate-key", "", "生成 RSA 4096 私钥到指定的新文件后退出")
 	migrate := flag.Bool("migrate", false, "显式执行数据库迁移后退出")
 	owner := flag.String("promote-owner", "", "将已有正常账号设为站点所有者后退出")
+	inspect := flag.Bool("check-textures", false, "检查材质引用与内容，默认仅预览孤立文件")
+	prune := flag.Bool("apply-prune", false, "配合 -check-textures 删除超过保留时间的孤立文件")
+	minAge := flag.Duration("orphan-min-age", 24*time.Hour, "孤立文件最短保留时间，至少 1h")
 	flag.Parse()
 	actions := 0
+	if *inspect {
+		actions++
+	}
 	if *keyPath != "" {
 		actions++
 	}
@@ -55,7 +63,7 @@ func run(logger *slog.Logger) error {
 	if *owner != "" {
 		actions++
 	}
-	if flag.NArg() != 0 || actions > 1 {
+	if flag.NArg() != 0 || actions > 1 || (*prune && !*inspect) || *minAge < time.Hour {
 		return fmt.Errorf("invalid command arguments")
 	}
 	if *keyPath != "" {
@@ -68,7 +76,7 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var db *sql.DB
-	if c.DatabaseDSN != "" || *migrate || *owner != "" {
+	if c.DatabaseDSN != "" || *migrate || *owner != "" || *inspect {
 		connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		db, err = database.Open(connectCtx, c.DatabaseDriver, c.DatabaseDSN)
 		cancel()
@@ -89,6 +97,23 @@ func run(logger *slog.Logger) error {
 		logger.Info("migrations complete", "driver", c.DatabaseDriver)
 		return nil
 	}
+	if *inspect {
+		if err := migrations.Check(ctx, db, c.DatabaseDriver); err != nil {
+			return err
+		}
+		service := skin.Service{Store: &skin.Store{DB: db, Dialect: c.DatabaseDriver}, Dir: c.TexturesDir, Now: time.Now}
+		report, err := service.Inspect(ctx, *prune, *minAge)
+		if err != nil {
+			return fmt.Errorf("texture inspection failed")
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+			return fmt.Errorf("write inspection report")
+		}
+		if len(report.Missing) > 0 || len(report.Corrupt) > 0 {
+			return fmt.Errorf("texture integrity check failed")
+		}
+		return nil
+	}
 	if *owner != "" {
 		email, err := identity.Email(*owner)
 		if err != nil {
@@ -97,7 +122,7 @@ func run(logger *slog.Logger) error {
 		if err := migrations.Check(ctx, db, c.DatabaseDriver); err != nil {
 			return err
 		}
-		if err := (&identity.Store{DB: db, Dialect: c.DatabaseDriver}).PromoteOwner(ctx, email); err != nil {
+		if err := (&identity.Store{DB: db, Dialect: c.DatabaseDriver}).PromoteOwner(ctx, email, time.Now().UTC()); err != nil {
 			return err
 		}
 		logger.Info("owner permission granted")

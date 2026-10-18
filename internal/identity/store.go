@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ShuilingXu/YggServer-Go/internal/audit"
 	"github.com/ShuilingXu/YggServer-Go/internal/database"
 	"github.com/ShuilingXu/YggServer-Go/internal/model"
 	"github.com/go-sql-driver/mysql"
@@ -15,8 +16,9 @@ import (
 )
 
 type Store struct {
-	DB      *sql.DB
-	Dialect string
+	DB           *sql.DB
+	Dialect      string
+	UUIDStrategy model.UUIDStrategy
 }
 
 func (s *Store) q(query string) string { return database.Bind(s.Dialect, query) }
@@ -65,7 +67,7 @@ func (s *Store) Register(ctx context.Context, a Account, name string) error {
 	if err != nil {
 		return storeError(err)
 	}
-	_, err = tx.ExecContext(ctx, s.q("INSERT INTO players(uuid,account_id,name,created_at,updated_at) VALUES(?,?,?,?,?)"), OfflineUUID(name), id, name, a.CreatedAt, a.CreatedAt)
+	_, err = tx.ExecContext(ctx, s.q("INSERT INTO players(uuid,account_id,name,created_at,updated_at,uuid_strategy) VALUES(?,?,?,?,?,?)"), PlayerUUID(name, s.UUIDStrategy), id, name, a.CreatedAt, a.CreatedAt, s.UUIDStrategy)
 	if err != nil {
 		return storeError(err)
 	}
@@ -190,6 +192,11 @@ func (s *Store) UpdateAccount(ctx context.Context, a Account, passwordHash []byt
 	if err != nil {
 		return storeError(err)
 	}
+	if remove || passwordHash != nil || email != "" {
+		if _, err := tx.ExecContext(ctx, s.q("DELETE FROM recovery_tokens WHERE account_id=?"), a.ID); err != nil {
+			return storeError(err)
+		}
+	}
 	_, err = tx.ExecContext(ctx, s.q("DELETE FROM tokens WHERE account_id=?"), a.ID)
 	if err != nil {
 		return storeError(err)
@@ -218,7 +225,7 @@ func (s *Store) Users(ctx context.Context, offset int) ([]Account, error) {
 	return users, storeError(rows.Err())
 }
 
-func (s *Store) Manage(ctx context.Context, actorID int64, uuid string, state model.AccountState, permission model.Permission) error {
+func (s *Store) Manage(ctx context.Context, actorID int64, uuid string, state model.AccountState, permission model.Permission, requestID string, now time.Time) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return storeError(err)
@@ -266,10 +273,13 @@ func (s *Store) Manage(ctx context.Context, actorID int64, uuid string, state mo
 	if err != nil {
 		return storeError(err)
 	}
+	if err := audit.Record(ctx, tx, s.Dialect, actor.UUID, target.UUID, model.AuditUserManage, requestID, now, model.AuditApplied, int16(state), int16(permission)); err != nil {
+		return storeError(err)
+	}
 	return storeError(tx.Commit())
 }
 
-func (s *Store) PromoteOwner(ctx context.Context, email string) error {
+func (s *Store) PromoteOwner(ctx context.Context, email string, now time.Time) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return storeError(err)
@@ -286,6 +296,9 @@ func (s *Store) PromoteOwner(ctx context.Context, email string) error {
 		return storeError(err)
 	}
 	if _, err := tx.ExecContext(ctx, s.q("DELETE FROM tokens WHERE account_id=?"), a.ID); err != nil {
+		return storeError(err)
+	}
+	if err := audit.Record(ctx, tx, s.Dialect, "", a.UUID, model.AuditOwnerGrant, "cli", now, model.AuditApplied, model.AuditUnchanged, int16(model.PermissionOwner)); err != nil {
 		return storeError(err)
 	}
 	return storeError(tx.Commit())
@@ -313,10 +326,11 @@ func (s *Store) SavePlayer(ctx context.Context, a Account, uuid, name string, re
 		if count >= 20 {
 			return ErrDenied
 		}
-		_, err = tx.ExecContext(ctx, s.q("INSERT INTO players(uuid,account_id,name,created_at,updated_at) VALUES(?,?,?,?,?)"), OfflineUUID(name), a.ID, name, now, now)
+		_, err = tx.ExecContext(ctx, s.q("INSERT INTO players(uuid,account_id,name,created_at,updated_at,uuid_strategy) VALUES(?,?,?,?,?,?)"), PlayerUUID(name, s.UUIDStrategy), a.ID, name, now, now, s.UUIDStrategy)
 	} else {
 		var id int64
-		err = tx.QueryRowContext(ctx, s.q("SELECT id FROM players WHERE uuid=? AND account_id=? FOR UPDATE"), uuid, a.ID).Scan(&id)
+		var strategy model.UUIDStrategy
+		err = tx.QueryRowContext(ctx, s.q("SELECT id,uuid_strategy FROM players WHERE uuid=? AND account_id=? FOR UPDATE"), uuid, a.ID).Scan(&id, &strategy)
 		if err != nil {
 			return storeError(err)
 		}
@@ -327,11 +341,18 @@ func (s *Store) SavePlayer(ctx context.Context, a Account, uuid, name string, re
 		if remove {
 			_, err = tx.ExecContext(ctx, s.q("DELETE FROM players WHERE id=?"), id)
 		} else {
-			_, err = tx.ExecContext(ctx, s.q("UPDATE players SET name=?,uuid=?,updated_at=? WHERE id=?"), name, OfflineUUID(name), now, id)
+			_, err = tx.ExecContext(ctx, s.q("UPDATE players SET name=?,uuid=?,updated_at=? WHERE id=?"), name, renamedUUID(name, uuid, strategy), now, id)
 		}
 	}
 	if err != nil {
 		return storeError(err)
 	}
 	return storeError(tx.Commit())
+}
+
+func renamedUUID(name, current string, strategy model.UUIDStrategy) string {
+	if strategy == model.UUIDRandom {
+		return current
+	}
+	return OfflineUUID(name)
 }

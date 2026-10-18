@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/ShuilingXu/YggServer-Go/internal/config"
 	"github.com/ShuilingXu/YggServer-Go/internal/httpapi"
@@ -21,6 +22,13 @@ func registerTextures(mux *http.ServeMux, c config.Config, key *rsa.PrivateKey, 
 	failure := func(w http.ResponseWriter, r *http.Request, err error) {
 		status := http.StatusInternalServerError
 		switch {
+		case errors.Is(err, skin.ErrQuota):
+			status = 413
+		case errors.Is(err, skin.ErrConflict):
+			status = 409
+		case errors.Is(err, skin.ErrRateLimited):
+			status = 429
+			w.Header().Set("Retry-After", "60")
 		case errors.Is(err, skin.ErrInvalid):
 			status = 400
 		case errors.Is(err, skin.ErrDenied), errors.Is(err, identity.ErrCredentials):
@@ -44,6 +52,35 @@ func registerTextures(mux *http.ServeMux, c config.Config, key *rsa.PrivateKey, 
 		}
 	}
 	web := func(next http.HandlerFunc) http.HandlerFunc { return available(auth.Authorized(model.TokenWeb, next)) }
+	registerManagement(mux, textures, auth, web, failure)
+	for _, route := range []string{"GET /api/textures/{uuid}/avatar", "GET /api/textures/{uuid}/preview"} {
+		mux.HandleFunc(route, available(func(w http.ResponseWriter, r *http.Request) {
+			handle := func(w http.ResponseWriter, r *http.Request) {
+				size := 128
+				if raw := r.URL.Query().Get("size"); raw != "" {
+					n, err := strconv.Atoi(raw)
+					if err != nil || n < 16 || n > 512 {
+						httpapi.Error(w, 400)
+						return
+					}
+					size = n
+				}
+				image, err := textures.Render(r.Context(), r.PathValue("uuid"), identity.Current(r.Context()).Account.ID, size, strings.HasSuffix(r.URL.Path, "/avatar"))
+				if err != nil {
+					failure(w, r, err)
+					return
+				}
+				w.Header().Set("Content-Type", "image/png")
+				w.Header().Set("Cache-Control", "private, no-store")
+				_, _ = w.Write(image)
+			}
+			if r.Header.Get("Authorization") != "" {
+				auth.Authorized(model.TokenWeb, handle)(w, r)
+			} else {
+				handle(w, r)
+			}
+		}))
+	}
 	for _, route := range []string{"GET /api/textures", "GET /api/closet", "GET /api/textures/mine"} {
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			offset := 0
@@ -62,10 +99,39 @@ func registerTextures(mux *http.ServeMux, c config.Config, key *rsa.PrivateKey, 
 			if r.URL.Path == "/api/textures/mine" {
 				mode = "mine"
 			}
-			items, err := textures.Store.List(r.Context(), identity.Current(r.Context()).Account.ID, mode, offset)
+			options := skin.ListOptions{Offset: offset, Limit: 50, Query: r.URL.Query().Get("q"), Uploader: r.URL.Query().Get("uploader"), Sort: r.URL.Query().Get("sort")}
+			if len(options.Query) > 200 || (options.Uploader != "" && len(options.Uploader) != 32) || (options.Sort != "" && options.Sort != "newest" && options.Sort != "oldest" && options.Sort != "name") {
+				httpapi.Error(w, 400)
+				return
+			}
+			if raw := r.URL.Query().Get("limit"); raw != "" {
+				n, err := strconv.Atoi(raw)
+				if err != nil || n < 1 || n > 100 {
+					httpapi.Error(w, 400)
+					return
+				}
+				options.Limit = n
+			}
+			if raw := r.URL.Query().Get("type"); raw != "" {
+				n, err := strconv.Atoi(raw)
+				if err != nil || n < 0 || n > 2 {
+					httpapi.Error(w, 400)
+					return
+				}
+				kind := model.TextureType(n)
+				options.Kind = &kind
+			}
+			items, total, err := textures.Store.List(r.Context(), identity.Current(r.Context()).Account.ID, mode, options)
 			if err != nil {
 				failure(w, r, err)
 				return
+			}
+			w.Header().Set("X-Total-Count", strconv.Itoa(total))
+			w.Header().Set("X-Limit", strconv.Itoa(options.Limit))
+			if len(items) == options.Limit && offset <= total-options.Limit && offset+options.Limit < total {
+				next := r.URL.Query()
+				next.Set("offset", strconv.Itoa(offset+options.Limit))
+				w.Header().Set("Link", "<"+r.URL.Path+"?"+next.Encode()+">; rel=\"next\"")
 			}
 			httpapi.JSON(w, 200, items)
 		})
@@ -79,7 +145,7 @@ func registerTextures(mux *http.ServeMux, c config.Config, key *rsa.PrivateKey, 
 		// 私有条目仅在显式携带 Web 凭证时可见。
 		if r.Header.Get("Authorization") != "" {
 			auth.Authorized(model.TokenWeb, func(w http.ResponseWriter, r *http.Request) {
-				t, err := textures.Store.Get(r.Context(), r.PathValue("uuid"), identity.Current(r.Context()).Account.ID)
+				t, err := textures.Store.Get(r.Context(), r.PathValue("uuid"), identity.Current(r.Context()).Account.ID, false)
 				if err != nil {
 					failure(w, r, err)
 					return
@@ -88,7 +154,7 @@ func registerTextures(mux *http.ServeMux, c config.Config, key *rsa.PrivateKey, 
 			})(w, r)
 			return
 		}
-		t, err := textures.Store.Get(r.Context(), r.PathValue("uuid"), 0)
+		t, err := textures.Store.Get(r.Context(), r.PathValue("uuid"), 0, false)
 		if err != nil {
 			failure(w, r, err)
 			return
@@ -100,7 +166,11 @@ func registerTextures(mux *http.ServeMux, c config.Config, key *rsa.PrivateKey, 
 			httpapi.Error(w, 503)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, (1<<20)+(64<<10))
+		maxBytes := c.UploadMaxBytes
+		if maxBytes == 0 {
+			maxBytes = 1 << 20
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(64<<10))
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			httpapi.Error(w, 400)
 			return
@@ -184,7 +254,7 @@ func registerTextures(mux *http.ServeMux, c config.Config, key *rsa.PrivateKey, 
 			httpapi.Error(w, 503)
 			return
 		}
-		t, err := textures.Store.Get(r.Context(), r.PathValue("uuid"), identity.Current(r.Context()).Account.ID)
+		t, err := textures.Store.Get(r.Context(), r.PathValue("uuid"), identity.Current(r.Context()).Account.ID, false)
 		if err != nil {
 			failure(w, r, err)
 			return

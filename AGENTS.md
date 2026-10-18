@@ -183,6 +183,15 @@ const (
 | `textures.is_public` | 是否进入公开皮肤库；原图鉴权由后续业务定义 | `0` 私有 / `1` 公开 |
 | `schema_migrations.dirty` | 迁移失败保护 | `0` 已完成 / `1` 执行中或失败待修复 |
 | `tokens.kind` | 登录令牌用途，Web 与游戏鉴权隔离 | `0` Web / `1` Yggdrasil |
+| `players.uuid_strategy` | 角色创建时的 UUID 策略 | `0` 离线 v3 / `1` 随机 v4 |
+| `recovery_tokens.kind` | 一次性邮件凭据用途 | `0` 验证邮箱 / `1` 重置密码 |
+| `textures.state` | 材质审核状态，与隐私独立 | `0` 正常 / `1` 下架 |
+| `reports.state` | 举报处理状态 | `0` 待处理 / `1` 已处理 / `2` 已驳回 |
+| `reports.dedup_key` | 并发待处理举报唯一约束占位，使用数值主键解除占位，兼容两库无部分唯一索引的差异 | `0` 待处理 / 非零为本条举报自增 ID |
+| `audit_events.action` | 管理审计动作 | `0` 用户管理 / `1` 终端所有者授权 / `2` 材质状态 / `3` 举报处理 |
+| `audit_events.result` | 成功提交的动作结果 | `0` 已执行 / `1` 举报已驳回 |
+| `audit_events.target_state` | 目标状态值；动作决定账号或材质语义 | `-1` 未修改或历史未知 / `0` 正常 / `1` 封禁或下架 / `2` 账号注销 |
+| `audit_events.target_permission` | 目标权限值 | `-1` 未修改或历史未知 / `0` 普通 / `1` 管理员 / `2` 所有者 |
 
 ### 4.3 表设计
 - 主键用自增 `BIGINT`；对外暴露用 UUID 字符串列（单列唯一索引）。
@@ -263,6 +272,7 @@ Yggdrasil 客户端兼容优先：路径、字段名、状态码、错误码按�
 - 新增非标准端点必须在 `/` 元数据或本文件里声明，不让客户端猜。
 - 基底端点：`GET /healthz` 存活检查；`GET /readyz` 检查数据库与迁移（未配置、未迁移或异常均 503）；可选 `GET /web/` 托管 React 构建产物，本轮为空白基底。
 - 皮肤站原生端点：`/api/auth/register`、`/api/auth/login`、`/api/auth/logout`；`/api/account`、`/api/account/password`、`/api/account/email`；`/api/admin/users`、`/api/admin/users/{uuid}`；`/api/players`、`/api/players/{uuid}`、`/api/players/{uuid}/textures`；`/api/textures`、`/api/textures/mine`、`/api/textures/{uuid}`、`/api/textures/{uuid}/file`；`/api/closet`、`/api/closet/{uuid}`；`/textures/{hash}`。方法、字段与权限见 README；不兼容 BS 的 PHP 前端接口。
+- 新增原生端点：`POST /api/account/verification`、`POST /api/auth/forgot-password`、`POST /api/auth/verify-email`、`POST /api/auth/reset-password`、`GET /account-recovery`；`GET /api/textures/{uuid}/avatar`、`GET /api/textures/{uuid}/preview`、`POST /api/textures/{uuid}/reports`；`GET /api/admin/reports`、`PUT /api/admin/reports/{uuid}`、`PUT /api/admin/textures/{uuid}/state`、`GET /api/admin/audit`。字段、状态码与权限见 README。
 - 破坏性变更（字段改名、语义变化）必须先问用户。
 
 ### 6.3 安全底线
@@ -413,6 +423,7 @@ $dir = Get-ChildItem "$env:LOCALAPPDATA\GitHubDesktop" -Directory |
 | 2026-10-17 | PowerShell 不展开传给 rg 的路径通配符 | `rg ... internal/identity/*.go` 被当成字面路径而报错 | 用 `rg ... internal/identity -g '*.go'`，不依赖 Shell 展开 |
 | 2026-10-17 | PowerShell 7 的 ConvertFrom-Json 自动解析时间 | ISO 时间已变成 DateTime，再按字符串 Parse 会受区域格式影响而失败 | 直接使用 DateTime 并转 UTC，不把对象先隐式转回区域字符串 |
 | 2026-10-17 | Start-Process 返回不代表依赖已就绪 | Redis 尚未监听时启动应用会退出，验收代理显示 502，即使构建测试通过 | 先确认 Redis PING 就绪再启动应用；测试故障恢复时保持应用运行，仅重启 Redis |
+| 2026-10-17 | 恢复凭据长度误判 | `crypto/rand.Text()` 返回 26 位，新增校验误要求 32 位，构建测试通过但浏览器验证邮件返回 403 | 长度边界与生成器一致，并通过实际邮件发送、一次性消费路径验收 |
 |  |  |  |  |
 
 ---
