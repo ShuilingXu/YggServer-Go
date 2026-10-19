@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"github.com/ShuilingXu/YggServer-Go/plugin"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,7 +27,7 @@ type Handler struct {
 func (h *Handler) failure(w http.ResponseWriter, r *http.Request, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, ErrCredentials), errors.Is(err, ErrDenied):
+	case errors.Is(err, ErrCredentials), errors.Is(err, ErrDenied), errors.Is(err, plugin.ErrDenied):
 		status = http.StatusForbidden
 	case errors.Is(err, site.ErrCooldown), errors.Is(err, site.ErrFunds):
 		status = http.StatusConflict
@@ -36,7 +37,7 @@ func (h *Handler) failure(w http.ResponseWriter, r *http.Request, err error) {
 		status = http.StatusConflict
 	case errors.Is(err, ErrInvalid):
 		status = http.StatusBadRequest
-	case errors.Is(err, ErrUnavailable), errors.Is(err, ErrMail):
+	case errors.Is(err, ErrUnavailable), errors.Is(err, ErrMail), errors.Is(err, plugin.ErrFailed):
 		status = http.StatusServiceUnavailable
 	case errors.Is(err, ErrRateLimited):
 		status = http.StatusTooManyRequests
@@ -51,6 +52,10 @@ func (h *Handler) failure(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	if errors.Is(err, site.ErrFunds) {
 		httpapi.JSON(w, status, httpapi.ErrorResponse{Error: "InsufficientPoints", ErrorMessage: "Insufficient points."})
+		return
+	}
+	if errors.Is(err, plugin.ErrDenied) {
+		httpapi.JSON(w, status, httpapi.ErrorResponse{Error: "PluginDenied", ErrorMessage: "Operation rejected by site policy."})
 		return
 	}
 	if errors.Is(err, site.ErrCooldown) {

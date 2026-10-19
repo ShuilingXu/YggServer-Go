@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/ShuilingXu/YggServer-Go/plugin"
 	"time"
 
 	"github.com/ShuilingXu/YggServer-Go/internal/audit"
@@ -17,6 +18,7 @@ import (
 )
 
 type Store struct {
+	Plugins      *plugin.Registry
 	DB           *sql.DB
 	Dialect      string
 	UUIDStrategy model.UUIDStrategy
@@ -66,13 +68,21 @@ func (s *Store) Register(ctx context.Context, a Account, name string) error {
 	if policy.Registration != 1 || !policy.AllowsEmail(a.Email) {
 		return ErrDenied
 	}
-	if _, err := s.createAccount(ctx, tx, a, name, policy); err != nil {
+	id, err := s.createAccount(ctx, tx, a, name, policy)
+	if err != nil {
 		return err
 	}
-	return storeError(tx.Commit())
+	if err := tx.Commit(); err != nil {
+		return storeError(err)
+	}
+	s.Plugins.After(ctx, plugin.Event{Action: plugin.AccountCreate, AccountID: id, AccountUUID: a.UUID, Name: name, At: a.CreatedAt})
+	return nil
 }
 
 func (s *Store) createAccount(ctx context.Context, tx *sql.Tx, a Account, name string, policy site.Settings) (int64, error) {
+	if err := s.Plugins.Before(ctx, plugin.Event{Action: plugin.AccountCreate, AccountUUID: a.UUID, Name: name, At: a.CreatedAt}); err != nil {
+		return 0, err
+	}
 	_, err := tx.ExecContext(ctx, s.q("INSERT INTO accounts(uuid,email,password_hash,created_at,verified) VALUES(?,?,?,?,?)"), a.UUID, a.Email, a.PasswordHash, a.CreatedAt, a.Verified)
 	if err != nil {
 		return 0, storeError(err)
@@ -131,6 +141,10 @@ func (s *Store) Issue(ctx context.Context, t Token, oldHash string, now time.Tim
 	if a.State != model.AccountActive || subtle.ConstantTimeCompare(a.PasswordHash, t.Account.PasswordHash) != 1 {
 		return ErrCredentials
 	}
+	event := plugin.Event{Action: plugin.SessionIssue, AccountID: a.ID, AccountUUID: a.UUID, PlayerUUID: t.PlayerUUID, TokenKind: int16(t.Kind), At: now.UTC()}
+	if err := s.Plugins.Before(ctx, event); err != nil {
+		return err
+	}
 	if oldHash != "" {
 		result, err := tx.ExecContext(ctx, s.q("DELETE FROM tokens WHERE access_hash=? AND account_id=? AND refresh_until>?"), oldHash, a.ID, now)
 		if err != nil {
@@ -179,7 +193,11 @@ func (s *Store) Issue(ctx context.Context, t Token, oldHash string, now time.Tim
 	if err != nil {
 		return storeError(err)
 	}
-	return storeError(tx.Commit())
+	if err := tx.Commit(); err != nil {
+		return storeError(err)
+	}
+	s.Plugins.After(ctx, event)
+	return nil
 }
 
 func (s *Store) Revoke(ctx context.Context, hash string) error {
@@ -344,6 +362,14 @@ func (s *Store) SavePlayer(ctx context.Context, a Account, uuid, name string, re
 	if current.State != model.AccountActive {
 		return ErrDenied
 	}
+	action := plugin.PlayerSave
+	if remove {
+		action = plugin.PlayerDelete
+	}
+	event := plugin.Event{Action: action, AccountID: a.ID, AccountUUID: a.UUID, PlayerUUID: uuid, Name: name, At: now.UTC()}
+	if err := s.Plugins.Before(ctx, event); err != nil {
+		return err
+	}
 	if uuid == "" {
 		var count int
 		err = tx.QueryRowContext(ctx, s.q("SELECT COUNT(*) FROM players WHERE account_id=?"), a.ID).Scan(&count)
@@ -360,7 +386,8 @@ func (s *Store) SavePlayer(ctx context.Context, a Account, uuid, name string, re
 		if err := site.Change(ctx, tx, s.Dialect, a.ID, -policy.PlayerCost, site.PointPlayer, now); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, s.q("INSERT INTO players(uuid,account_id,name,created_at,updated_at,uuid_strategy) VALUES(?,?,?,?,?,?)"), PlayerUUID(name, s.UUIDStrategy), a.ID, name, now, now, s.UUIDStrategy)
+		event.PlayerUUID = PlayerUUID(name, s.UUIDStrategy)
+		_, err = tx.ExecContext(ctx, s.q("INSERT INTO players(uuid,account_id,name,created_at,updated_at,uuid_strategy) VALUES(?,?,?,?,?,?)"), event.PlayerUUID, a.ID, name, now, now, s.UUIDStrategy)
 	} else {
 		var id int64
 		var strategy model.UUIDStrategy
@@ -375,13 +402,18 @@ func (s *Store) SavePlayer(ctx context.Context, a Account, uuid, name string, re
 		if remove {
 			_, err = tx.ExecContext(ctx, s.q("DELETE FROM players WHERE id=?"), id)
 		} else {
-			_, err = tx.ExecContext(ctx, s.q("UPDATE players SET name=?,uuid=?,updated_at=? WHERE id=?"), name, renamedUUID(name, uuid, strategy), now, id)
+			event.PlayerUUID = renamedUUID(name, uuid, strategy)
+			_, err = tx.ExecContext(ctx, s.q("UPDATE players SET name=?,uuid=?,updated_at=? WHERE id=?"), name, event.PlayerUUID, now, id)
 		}
 	}
 	if err != nil {
 		return storeError(err)
 	}
-	return storeError(tx.Commit())
+	if err := tx.Commit(); err != nil {
+		return storeError(err)
+	}
+	s.Plugins.After(ctx, event)
+	return nil
 }
 
 func renamedUUID(name, current string, strategy model.UUIDStrategy) string {

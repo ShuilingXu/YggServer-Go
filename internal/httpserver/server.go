@@ -9,6 +9,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"github.com/ShuilingXu/YggServer-Go/plugin"
+	"github.com/ShuilingXu/YggServer-Go/plugins"
 	"log/slog"
 	"net"
 	"net/http"
@@ -45,7 +47,16 @@ type Meta struct {
 
 type ErrorResponse = httpapi.ErrorResponse
 
-func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cache *redisstore.Store, logger *slog.Logger) (http.Handler, error) {
+func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cache *redisstore.Store, logger *slog.Logger, extensions ...plugin.Definition) (http.Handler, error) {
+
+	definitions := append(plugins.Definitions(), extensions...)
+	registry, err := plugin.New(definitions, c.Plugins, logger)
+	if err != nil {
+		return nil, err
+	}
+	for _, info := range registry.List() {
+		logger.Info("plugin configured", "plugin_id", info.ID, "version", info.Version, "enabled", info.Enabled)
+	}
 	var salt [32]byte
 	if _, err := rand.Read(salt[:]); err != nil {
 		return nil, fmt.Errorf("initialize access log privacy: %w", err)
@@ -74,7 +85,7 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 	mux := http.NewServeMux()
 	var accounts *identity.Service
 	if db != nil {
-		accounts, err = identity.New(&identity.Store{DB: db, Dialect: c.DatabaseDriver, UUIDStrategy: c.UUIDStrategy}, time.Now)
+		accounts, err = identity.New(&identity.Store{Plugins: registry, DB: db, Dialect: c.DatabaseDriver, UUIDStrategy: c.UUIDStrategy}, time.Now)
 		if err != nil {
 			return nil, err
 		}
@@ -88,6 +99,7 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 		}
 	}
 	accountHandler.RegisterRoutes(mux)
+	registerPlugins(mux, registry, accountHandler)
 	mux.HandleFunc("GET /account-recovery", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -96,7 +108,7 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 	})
 	var textures *skin.Service
 	if db != nil {
-		textures = &skin.Service{Redis: cache, UploadLimit: c.UploadLimit, Store: &skin.Store{DB: db, Dialect: c.DatabaseDriver, Quota: c.StorageQuota}, MaxBytes: c.UploadMaxBytes, Dir: c.TexturesDir, Now: time.Now}
+		textures = &skin.Service{Plugins: registry, Redis: cache, UploadLimit: c.UploadLimit, Store: &skin.Store{DB: db, Dialect: c.DatabaseDriver, Quota: c.StorageQuota}, MaxBytes: c.UploadMaxBytes, Dir: c.TexturesDir, Now: time.Now}
 	}
 	registerTextures(mux, c, key, textures, accountHandler, logger)
 	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +165,7 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		requestID := rand.Text()
+		r = r.WithContext(plugin.WithRequestID(r.Context(), requestID))
 		w.Header().Set("X-Request-ID", requestID)
 		w.Header().Set("X-Authlib-Injector-API-Location", c.PublicURL+"/")
 		w.Header().Set("X-Content-Type-Options", "nosniff")

@@ -3,6 +3,7 @@ package httpserver
 import (
 	"crypto/rsa"
 	"errors"
+	"github.com/ShuilingXu/YggServer-Go/plugin"
 	"log/slog"
 	"net"
 	"net/http"
@@ -32,15 +33,19 @@ func registerTextures(mux *http.ServeMux, c config.Config, key *rsa.PrivateKey, 
 			w.Header().Set("Retry-After", "60")
 		case errors.Is(err, skin.ErrInvalid):
 			status = 400
-		case errors.Is(err, skin.ErrDenied), errors.Is(err, identity.ErrCredentials):
+		case errors.Is(err, skin.ErrDenied), errors.Is(err, identity.ErrCredentials), errors.Is(err, plugin.ErrDenied):
 			status = 403
 		case errors.Is(err, skin.ErrMissing):
 			status = 404
-		case errors.Is(err, skin.ErrUnavailable):
+		case errors.Is(err, skin.ErrUnavailable), errors.Is(err, plugin.ErrFailed):
 			status = 503
 		}
 		if errors.Is(err, site.ErrFunds) {
 			httpapi.JSON(w, status, httpapi.ErrorResponse{Error: "InsufficientPoints", ErrorMessage: "Insufficient points."})
+			return
+		}
+		if errors.Is(err, plugin.ErrDenied) {
+			httpapi.JSON(w, status, httpapi.ErrorResponse{Error: "PluginDenied", ErrorMessage: "Operation rejected by site policy."})
 			return
 		}
 		httpapi.Error(w, status)

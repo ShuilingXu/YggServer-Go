@@ -82,3 +82,11 @@
 - 验证：Go 构建/vet/测试及前端类型检查/测试/构建通过；最终双库各完成 40+22 项浏览器检查，OIDC 各完成 15+16 项。正式页面配置即时更新、OIDC 跳转、授权同意/拒绝与签到实际走通；最终新账号积分 1000→1083。两库 34 个迁移均无 dirty，OAuth scope 为 SMALLINT；最终日志无重复访问记录或凭据字段。详细浏览器 URL、操作及未覆盖项见 README。
 - 部署前需配置公开 URL、SMTP、OIDC issuer/client 和环境变量密钥，并向真实提供方登记 `/oidc/callback`；真实平台、生产 TLS 与 Minecraft 联调仍待完成。没有迁移用户原有数据库，没有提交或推送。
 - 本次 TEMP 服务已经停止，55401–55428 中所用端口无监听。自动审批拒绝删除已核实目录 `C:/Users/shuil/AppData/Local/Temp/ygg-operations-20261018`，仅返回 blocked by policy；未绕过，测试数据库、程序、日志及直接置于 TEMP 的一次性辅助脚本仍保留，均未入库。浏览器策略亦拒绝关闭旧验收标签页，未重试。真实签到截图保留为 `C:/Users/shuil/AppData/Local/Temp/ygg-operations-points-proof.png`。
+
+## 插件开发当前状态（2026-10-18）
+
+- 站点运营功能已按用户要求提交：后端 `ebbe75a`，前端 `755b933`，未推送。其后的插件实现保留为工作区改动。
+- 公共 `plugin` 包提供 API 1、不可变注册表、配置校验、六类业务事件的 Before/After、异常隔离及所有者只读 JSON 查询。核心事务和鉴权仍是唯一入口。内置保留角色名策略与进程活动统计，两者分别覆盖拒绝 Hook 和提交后 Hook；站点配置页显示运行状态与查询结果。详细开发入口见 `plugin/README.md`。
+- Go 构建/vet/测试、前端类型检查/测试/构建通过；双库各 30 项实际浏览器检查、关闭流程五项及正式页面中文拒绝提示和查询走通，桌面/375px 深浅主题已查看。最终编码调整后正式页面 JSON 查询及进程重启清零再次确认；范围和 URL 见 README。
+- 部署配置在 `YGG_PLUGINS_FILE`，默认关闭，修改需重启；无新数据库迁移和依赖。当前只支持可信编译型插件、同步快速回调及所有者 GET 查询，不支持后台资源生命周期、热加载、网页安装、可靠事件队列或 BS PHP 兼容。第三方插件与生产联调待实际插件提供后验证。
+- 本次验收标签页已关闭，应用、代理、Redis、PostgreSQL、MySQL 均已停止，55401/55402 及 55603–55617 中使用的端口无监听。自动审批拒绝递归删除已核实的 `C:/Users/shuil/AppData/Local/Temp/ygg-plugins-20261018`，仅返回 blocked by policy；未绕过，临时数据库、程序、配置、脚本和日志仍留在 TEMP，均未入库。复用的旧测试目录未删除；新辅助脚本 `ygg-plugin-integrate.py`、`ygg-plugin-ui.py` 亦在 TEMP。截图保留 `C:/Users/shuil/AppData/Local/Temp/ygg-plugins-proof.png`。

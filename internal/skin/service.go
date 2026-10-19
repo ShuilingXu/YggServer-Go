@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/ShuilingXu/YggServer-Go/plugin"
 	"image"
 	"image/draw"
 	"image/png"
@@ -48,6 +49,7 @@ type Texture struct {
 }
 
 type Service struct {
+	Plugins     *plugin.Registry
 	Store       *Store
 	Dir         string
 	Now         func() time.Time
@@ -140,6 +142,10 @@ func (s *Service) Upload(ctx context.Context, accountID int64, name string, kind
 	}
 	sum := sha256.Sum256(data)
 	t := Texture{UUID: model.UUID(), AccountID: accountID, Name: name, Type: kind, Hash: hex.EncodeToString(sum[:]), Size: int64(len(data)), Width: w, Height: h, Public: public, CreatedAt: s.Now().UTC()}
+	event := plugin.Event{Action: plugin.TextureUpload, AccountID: accountID, Name: name, PlayerUUID: playerUUID, TextureUUID: t.UUID, TextureKind: int16(kind), Public: public, SizeBytes: t.Size, At: t.CreatedAt}
+	if err := s.Plugins.Before(ctx, event); err != nil {
+		return Texture{}, err
+	}
 	conn, release, err := s.Store.LockTexture(ctx, t.Hash)
 	if err != nil {
 		return Texture{}, err
@@ -170,6 +176,7 @@ func (s *Service) Upload(ctx context.Context, accountID int64, name string, kind
 		}
 		return Texture{}, err
 	}
+	s.Plugins.After(ctx, event)
 	return t, nil
 }
 

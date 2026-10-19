@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -42,6 +44,26 @@ func TestDeploymentConfiguration(t *testing.T) {
 			}
 			if err != nil && strings.Contains(err.Error(), "sensitive-credential") {
 				t.Fatal("configuration error leaks credentials")
+			}
+		})
+	}
+}
+
+func TestPluginConfigurationFile(t *testing.T) {
+	for _, data := range []string{`null`, `[]`, `{"activity":{"enabled":1,"secret":"sensitive-credential"}}`, `{}`, `{"activity":{"enabled":1,"options":{}}}`} {
+		t.Run(data, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "plugins.json")
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("YGG_PLUGINS_FILE", path)
+			_, err := Load()
+			valid := data == `{}` || data == `{"activity":{"enabled":1,"options":{}}}`
+			if (err == nil) != valid {
+				t.Fatalf("valid=%t, error=%v", valid, err)
+			}
+			if err != nil && strings.Contains(err.Error(), "sensitive-credential") {
+				t.Fatal("configuration leaked")
 			}
 		})
 	}

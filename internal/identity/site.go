@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"github.com/ShuilingXu/YggServer-Go/plugin"
 	"math/big"
 	"net/http"
 	"time"
@@ -79,6 +80,10 @@ func (s *Store) Sign(ctx context.Context, id int64, now time.Time) error {
 	if last.Valid && now.Before(last.Time.Add(time.Duration(c.SignHours)*time.Hour)) {
 		return site.ErrCooldown
 	}
+	event := plugin.Event{Action: plugin.CheckIn, AccountID: a.ID, AccountUUID: a.UUID, At: now.UTC()}
+	if err := s.Plugins.Before(ctx, event); err != nil {
+		return err
+	}
 	n, err := rand.Int(rand.Reader, big.NewInt(c.SignMax-c.SignMin+1))
 	if err != nil {
 		return err
@@ -88,7 +93,11 @@ func (s *Store) Sign(ctx context.Context, id int64, now time.Time) error {
 	if err != nil {
 		return storeError(err)
 	}
-	return storeError(tx.Commit())
+	if err := tx.Commit(); err != nil {
+		return storeError(err)
+	}
+	s.Plugins.After(ctx, event)
+	return nil
 }
 
 func (s *Store) SaveSettings(ctx context.Context, actor Account, c site.Settings, requestID string, now time.Time) error {

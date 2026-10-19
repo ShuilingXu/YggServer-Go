@@ -283,6 +283,7 @@ Yggdrasil 客户端兼容优先：路径、字段名、状态码、错误码按�
 - 皮肤站原生端点：`/api/auth/register`、`/api/auth/login`、`/api/auth/logout`；`/api/account`、`/api/account/password`、`/api/account/email`；`/api/admin/users`、`/api/admin/users/{uuid}`；`/api/players`、`/api/players/{uuid}`、`/api/players/{uuid}/textures`；`/api/textures`、`/api/textures/mine`、`/api/textures/{uuid}`、`/api/textures/{uuid}/file`；`/api/closet`、`/api/closet/{uuid}`；`/textures/{hash}`。方法、字段与权限见 README；不兼容 BS 的 PHP 前端接口。
 - 新增原生端点：`POST /api/account/verification`、`POST /api/auth/forgot-password`、`POST /api/auth/verify-email`、`POST /api/auth/reset-password`、`GET /account-recovery`；`GET /api/textures/{uuid}/avatar`、`GET /api/textures/{uuid}/preview`、`POST /api/textures/{uuid}/reports`；`GET /api/admin/reports`、`PUT /api/admin/reports/{uuid}`、`PUT /api/admin/textures/{uuid}/state`、`GET /api/admin/audit`。字段、状态码与权限见 README。
 - 站点运营端点：`GET /api/site`、`PUT /api/admin/site`、`GET /api/account/points`、`POST /api/account/sign`；`GET/POST /api/admin/oauth/clients`、`DELETE /api/admin/oauth/clients/{uuid}`、`GET /api/oauth/client`、`POST /api/oauth/authorize`、`GET /oauth/authorize`、`POST /oauth/token`、`GET /oauth/userinfo`、`GET /oauth/players`、`GET /api/account/oauth`、`DELETE /api/account/oauth/{uuid}`；`POST /api/auth/oidc/start`、`POST /api/auth/oidc/complete`、`GET /oidc/callback`、`GET /api/account/oidc`、`POST /api/account/oidc/start`、`DELETE /api/account/oidc/{uuid}`。字段与权限见 README。
+- 插件入口：所有者 `GET /api/admin/plugins` 查看运行清单；所有者 `GET /api/plugins/{插件ID}/{声明路径}` 查询插件 JSON，内置 `GET /api/plugins/activity/counts`。插件开发契约与 Hook 时点见 `plugin/README.md`。
 - 破坏性变更（字段改名、语义变化）必须先问用户。
 
 ### 6.3 安全底线
@@ -435,6 +436,7 @@ $dir = Get-ChildItem "$env:LOCALAPPDATA\GitHubDesktop" -Directory |
 | 2026-10-17 | Start-Process 返回不代表依赖已就绪 | Redis 尚未监听时启动应用会退出，验收代理显示 502，即使构建测试通过 | 先确认 Redis PING 就绪再启动应用；测试故障恢复时保持应用运行，仅重启 Redis |
 | 2026-10-17 | 恢复凭据长度误判 | `crypto/rand.Text()` 返回 26 位，新增校验误要求 32 位，构建测试通过但浏览器验证邮件返回 403 | 长度边界与生成器一致，并通过实际邮件发送、一次性消费路径验收 |
 | 2026-10-18 | 新审计动作未扩展旧 CHECK | 编译测试通过但浏览器保存站点配置返回 500 | 新增两库前向迁移扩展动作约束；新增动作时同时检查数据库约束与前端映射 |
+| 2026-10-18 | ServeMux 兜底覆盖方法拒绝 | 插件仅注册 GET，但浏览器 POST 得到兜底 404 | 插件已声明路径显式检查 GET/HEAD，其余返回 405 与 Allow；未知路径仍为 404 |
 |  |  |  |  |
 
 ---

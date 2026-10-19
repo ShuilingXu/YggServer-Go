@@ -6,6 +6,7 @@ import (
 	"github.com/ShuilingXu/YggServer-Go/internal/audit"
 	"github.com/ShuilingXu/YggServer-Go/internal/model"
 	"github.com/ShuilingXu/YggServer-Go/internal/site"
+	"github.com/ShuilingXu/YggServer-Go/plugin"
 	"time"
 )
 
@@ -79,7 +80,13 @@ func (s *Store) ResolveExternal(ctx context.Context, a Account, issuer, subject,
 	if err := audit.Record(ctx, tx, s.Dialect, a.UUID, uuid, model.AuditExternalBind, rid, now, model.AuditApplied, -1, -1); err != nil {
 		return Account{}, storeError(err)
 	}
-	return a, storeError(tx.Commit())
+	if err := tx.Commit(); err != nil {
+		return Account{}, storeError(err)
+	}
+	if parent == "" {
+		s.Plugins.After(ctx, plugin.Event{Action: plugin.AccountCreate, AccountID: a.ID, AccountUUID: a.UUID, Name: "OIDC_" + a.UUID[:8], At: now})
+	}
+	return a, nil
 }
 
 func (s *Store) RemoveExternal(ctx context.Context, a Account, uuid, rid string, now time.Time) error {

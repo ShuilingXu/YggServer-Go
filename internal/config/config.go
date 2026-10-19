@@ -1,8 +1,12 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"github.com/ShuilingXu/YggServer-Go/internal/model"
+	"github.com/ShuilingXu/YggServer-Go/plugin"
+	"io"
 	"net"
 	"net/mail"
 	"net/url"
@@ -13,6 +17,7 @@ import (
 )
 
 type Config struct {
+	Plugins          map[string]plugin.Config
 	OIDCClientSecret string
 	ListenAddr       string
 	PublicURL        string
@@ -155,6 +160,23 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid YGG_UPLOADS_PER_MINUTE")
 		}
 		c.UploadLimit = n
+	}
+
+	if path := os.Getenv("YGG_PLUGINS_FILE"); path != "" {
+		f, err := os.Open(path)
+		if err != nil {
+			return Config{}, fmt.Errorf("cannot open YGG_PLUGINS_FILE")
+		}
+		data, readErr := io.ReadAll(io.LimitReader(f, 65537))
+		f.Close()
+		if readErr != nil || len(data) > 65536 || bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+			return Config{}, fmt.Errorf("invalid YGG_PLUGINS_FILE")
+		}
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&c.Plugins) != nil || decoder.Decode(new(any)) != io.EOF {
+			return Config{}, fmt.Errorf("invalid YGG_PLUGINS_FILE")
+		}
 	}
 	return c, nil
 }
