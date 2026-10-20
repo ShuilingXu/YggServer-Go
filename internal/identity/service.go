@@ -14,12 +14,13 @@ import (
 )
 
 type Service struct {
-	External  *ExternalLogin
-	Store     *Store
-	Now       func() time.Time
-	Redis     *redisstore.Store
-	Recovery  *Recovery
-	dummyHash []byte
+	LegacySalt string
+	External   *ExternalLogin
+	Store      *Store
+	Now        func() time.Time
+	Redis      *redisstore.Store
+	Recovery   *Recovery
+	dummyHash  []byte
 }
 
 func New(store *Store, now func() time.Time) (*Service, error) {
@@ -71,12 +72,22 @@ func (s *Service) Credentials(ctx context.Context, identification, password stri
 	if err != nil {
 		hash = s.dummyHash
 	}
-	passwordErr := bcrypt.CompareHashAndPassword(hash, []byte(password))
+	passwordOK := verifyPassword(hash, password, s.LegacySalt)
 	if err != nil {
 		return Account{}, err
 	}
-	if passwordErr != nil || a.State != model.AccountActive {
+	if !passwordOK || a.State != model.AccountActive {
 		return Account{}, ErrCredentials
+	}
+	if !strings.HasPrefix(string(hash), "$2") {
+		upgraded, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			return Account{}, err
+		}
+		if err = s.Store.upgradePassword(ctx, a.ID, hash, upgraded); err != nil {
+			return Account{}, err
+		}
+		a.PasswordHash = upgraded
 	}
 	return a, nil
 }
@@ -203,7 +214,7 @@ func (s *Service) Refresh(ctx context.Context, access string, client *string, pr
 }
 
 func (s *Service) UpdateAccount(ctx context.Context, t Token, current, next, email string, remove bool) error {
-	if bcrypt.CompareHashAndPassword(t.Account.PasswordHash, []byte(current)) != nil {
+	if !verifyPassword(t.Account.PasswordHash, current, s.LegacySalt) {
 		return ErrCredentials
 	}
 	if remove {

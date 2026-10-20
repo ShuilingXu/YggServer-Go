@@ -1,0 +1,10 @@
+CREATE TABLE import_runs (
+ id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ uuid CHAR(32) NOT NULL,
+ dry_run SMALLINT NOT NULL DEFAULT 1 CHECK(dry_run IN (0,1)),
+ state SMALLINT NOT NULL DEFAULT 0 CHECK(state IN (0,1,2,3)),
+ report TEXT NOT NULL,
+ created_at TIMESTAMPTZ(3) NOT NULL,
+ completed_at TIMESTAMPTZ(3) NULL,
+ CONSTRAINT uk_import_runs_uuid UNIQUE(uuid)
+);

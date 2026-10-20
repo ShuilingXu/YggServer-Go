@@ -23,6 +23,7 @@ import (
 	"github.com/ShuilingXu/YggServer-Go/internal/httpapi"
 	"github.com/ShuilingXu/YggServer-Go/internal/identity"
 	"github.com/ShuilingXu/YggServer-Go/internal/mailer"
+	"github.com/ShuilingXu/YggServer-Go/internal/provision"
 	"github.com/ShuilingXu/YggServer-Go/internal/redisstore"
 	"github.com/ShuilingXu/YggServer-Go/internal/site"
 	"github.com/ShuilingXu/YggServer-Go/internal/skin"
@@ -92,6 +93,7 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 	}
 	accountHandler := &identity.Handler{Service: accounts, Redis: cache, Logger: logger}
 	if accounts != nil {
+		accounts.LegacySalt = c.BSLegacySalt
 		accounts.Redis = cache
 		accounts.External = &identity.ExternalLogin{PublicURL: c.PublicURL, Secret: c.OIDCClientSecret}
 		if c.SMTPAddr != "" {
@@ -99,6 +101,14 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 		}
 	}
 	accountHandler.RegisterRoutes(mux)
+	var provisioning *provision.Manager
+	if accounts != nil && migrations.Check(context.Background(), db, c.DatabaseDriver) == nil {
+		provisioning, err = provision.New(&provision.Store{DB: db, Dialect: c.DatabaseDriver, TexturesDir: c.TexturesDir, LegacySalt: c.BSLegacySalt, Now: time.Now}, accountHandler, logger, c.SetupCodeFile)
+		if err != nil {
+			return nil, err
+		}
+		provisioning.Register(mux)
+	}
 	registerPlugins(mux, registry, accountHandler)
 	mux.HandleFunc("GET /account-recovery", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -162,7 +172,7 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 		mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServer(http.Dir(c.WebDir))))
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { httpapi.Error(w, http.StatusNotFound) })
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		requestID := rand.Text()
 		r = r.WithContext(plugin.WithRequestID(r.Context(), requestID))
@@ -202,8 +212,17 @@ func New(c config.Config, publicKey string, key *rsa.PrivateKey, db *sql.DB, cac
 				slog.Int("status", recorded.status), slog.Int64("dur_ms", time.Since(start).Milliseconds()),
 				slog.String("ip_hash", hex.EncodeToString(digest.Sum(nil))))
 		}()
-		mux.ServeHTTP(recorded, r)
-	}), nil
+		if provisioning != nil {
+			_, r.Pattern = mux.Handler(r)
+			provisioning.Guard(recorded, r, mux)
+		} else {
+			mux.ServeHTTP(recorded, r)
+		}
+	})
+	if provisioning != nil {
+		return &provisionHandler{Handler: handler, manager: provisioning}, nil
+	}
+	return handler, nil
 }
 
 type responseWriter struct {
@@ -225,3 +244,10 @@ func (w *responseWriter) Write(data []byte) (int, error) {
 	}
 	return w.ResponseWriter.Write(data)
 }
+
+type provisionHandler struct {
+	http.Handler
+	manager *provision.Manager
+}
+
+func (h *provisionHandler) Close() error { return h.manager.Close() }

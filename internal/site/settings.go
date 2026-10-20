@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/ShuilingXu/YggServer-Go/internal/database"
 	"net"
 	"net/url"
 	"strings"
@@ -118,4 +119,15 @@ func ValidIssuer(raw string) bool {
 		return false
 	}
 	return u.Scheme == "https" || u.Scheme == "http" && (u.Hostname() == "localhost" || net.ParseIP(u.Hostname()) != nil && net.ParseIP(u.Hostname()).IsLoopback())
+}
+
+func Write(ctx context.Context, tx *sql.Tx, dialect string, c Settings) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, database.Bind(dialect, "UPDATE site_settings SET name=?,description=?,announcement=?,registration=?,email_mode=?,email_domains=?,max_players=?,single_session=?,sign_enabled=?,sign_hours=?,sign_min=?,sign_max=?,initial_points=?,player_cost=?,oauth_enabled=?,upload_cost=?,private_upload_cost=?,closet_cost=?,skin_domains=?,oidc_enabled=?,oidc_issuer=?,oidc_client_id=?,oidc_name=? WHERE id=1"), c.Name, c.Description, c.Announcement, c.Registration, c.EmailMode, c.EmailDomains, c.MaxPlayers, c.SingleSession, c.SignEnabled, c.SignHours, c.SignMin, c.SignMax, c.InitialPoints, c.PlayerCost, c.OAuthEnabled, c.UploadCost, c.PrivateUploadCost, c.ClosetCost, c.SkinDomains, c.OIDCEnabled, c.OIDCIssuer, c.OIDCClientID, c.OIDCName)
+	if err != nil {
+		return fmt.Errorf("write site settings: %w", err)
+	}
+	return nil
 }

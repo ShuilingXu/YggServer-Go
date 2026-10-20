@@ -116,7 +116,7 @@ func (s *Store) SaveSettings(ctx context.Context, actor Account, c site.Settings
 	if a.State != model.AccountActive || a.Permission != model.PermissionOwner {
 		return ErrDenied
 	}
-	_, err = tx.ExecContext(ctx, s.q("UPDATE site_settings SET name=?,description=?,announcement=?,registration=?,email_mode=?,email_domains=?,max_players=?,single_session=?,sign_enabled=?,sign_hours=?,sign_min=?,sign_max=?,initial_points=?,player_cost=?,oauth_enabled=?,upload_cost=?,private_upload_cost=?,closet_cost=?,skin_domains=?,oidc_enabled=?,oidc_issuer=?,oidc_client_id=?,oidc_name=? WHERE id=1"), c.Name, c.Description, c.Announcement, c.Registration, c.EmailMode, c.EmailDomains, c.MaxPlayers, c.SingleSession, c.SignEnabled, c.SignHours, c.SignMin, c.SignMax, c.InitialPoints, c.PlayerCost, c.OAuthEnabled, c.UploadCost, c.PrivateUploadCost, c.ClosetCost, c.SkinDomains, c.OIDCEnabled, c.OIDCIssuer, c.OIDCClientID, c.OIDCName)
+	err = site.Write(ctx, tx, s.Dialect, c)
 	if err != nil {
 		return storeError(err)
 	}

@@ -52,8 +52,9 @@ const (
 type UUIDStrategy int16
 
 const (
-	UUIDOffline UUIDStrategy = 0
-	UUIDRandom  UUIDStrategy = 1
+	UUIDOffline   UUIDStrategy = 0
+	UUIDRandom    UUIDStrategy = 1
+	UUIDPreserved UUIDStrategy = 2
 )
 
 type RecoveryKind int16
@@ -89,6 +90,8 @@ const (
 	AuditOAuthClient     AuditAction = 5
 	AuditExternalBind    AuditAction = 6
 	AuditExternalUnbind  AuditAction = 7
+	AuditSetup           AuditAction = 8
+	AuditBSImport        AuditAction = 9
 )
 
 type AuditResult int16

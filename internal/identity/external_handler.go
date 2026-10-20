@@ -3,7 +3,6 @@ package identity
 import (
 	"github.com/ShuilingXu/YggServer-Go/internal/httpapi"
 	"github.com/ShuilingXu/YggServer-Go/internal/model"
-	"golang.org/x/crypto/bcrypt"
 	"net/http"
 )
 
@@ -13,7 +12,7 @@ func (h *Handler) registerExternal(mux *http.ServeMux) {
 		http.Redirect(w, r, "/web/#/oidc/callback?"+r.URL.RawQuery, http.StatusFound)
 	})
 	for _, route := range []string{"POST /api/auth/oidc/start", "POST /api/account/oidc/start"} {
-		start := h.limited(func(w http.ResponseWriter, r *http.Request) {
+		start := h.RateLimit(func(w http.ResponseWriter, r *http.Request) {
 			var t *Token
 			if r.URL.Path == "/api/account/oidc/start" {
 				value := Current(r.Context())
@@ -31,7 +30,7 @@ func (h *Handler) registerExternal(mux *http.ServeMux) {
 		}
 		mux.HandleFunc(route, start)
 	}
-	mux.HandleFunc("POST /api/auth/oidc/complete", h.limited(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/auth/oidc/complete", h.RateLimit(func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ State, Code string }
 		if !httpapi.Decode(w, r, &body) {
 			return
@@ -52,13 +51,13 @@ func (h *Handler) registerExternal(mux *http.ServeMux) {
 		}
 		httpapi.JSON(w, 200, result)
 	}))
-	mux.HandleFunc("DELETE /api/account/oidc/{uuid}", h.Authorized(model.TokenWeb, h.limited(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("DELETE /api/account/oidc/{uuid}", h.Authorized(model.TokenWeb, h.RateLimit(func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Password string }
 		if !httpapi.Decode(w, r, &body) {
 			return
 		}
 		a := Current(r.Context()).Account
-		if bcrypt.CompareHashAndPassword(a.PasswordHash, []byte(body.Password)) != nil {
+		if !verifyPassword(a.PasswordHash, body.Password, h.Service.LegacySalt) {
 			h.failure(w, r, ErrCredentials)
 			return
 		}

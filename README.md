@@ -42,6 +42,8 @@ MySQL 使用 `YGG_DATABASE_DRIVER=mysql` 与 `YGG_DATABASE_DSN=USER:PASSWORD@tcp
 | `YGG_REDIS_URL` | `redis://` 或 `rediss://` 连接 URL，支持 ACL、密码和数据库编号 |
 | `YGG_REDIS_PREFIX` | `ygg:`；共享 Redis 时按站点隔离，最多 64 字节且不含空白 |
 | `YGG_TEXTURES_DIR` | 材质持久目录；上传、删除和原图分发需要配置 |
+| `YGG_SETUP_CODE_FILE` | 默认为材质目录内的 `setup-code`；空站启动时生成安装码，完成后删除；应放在仅服务账号可读的目录 |
+| `YGG_BS_LEGACY_SALT` | BS `SALTED2*` 旧密码的全站 pepper；仅部署端配置，不放在命令行、报告或日志中 |
 | `YGG_WEB_DIR` | 可选，包含 index.html 的 React 构建目录 |
 | `YGG_UUID_STRATEGY` | `v3`（离线 UUID，改名变化）或 `v4`（随机 UUID，改名保留）；仅影响新角色 |
 | `YGG_SMTP_ADDR` | 可选 SMTP `host:port`；启用邮件时必须配置 PUBLIC_URL 与 MAIL_FROM |
@@ -86,7 +88,7 @@ accessToken 使用 crypto/rand 生成，只保存 SHA-256 哈希；clientToken �
 
 角色 UUID 默认使用离线 v3 算法；`YGG_UUID_STRATEGY=v4` 可选择随机 UUID。每个角色持久保存整数策略，v3 改名重新计算 UUID，v4 改名保持 UUID；已有角色迁移后登记为 v3，修改配置只影响新角色，不重算旧身份。v4 不代表 Mojang 正版身份。角色名在两库均不区分大小写地唯一。注销账号保留邮箱与账号 UUID，不能通过再次注册恢复；所有者不允许从 Web 自行注销或被管理员降权/封禁。
 
-首次所有者需先注册，再由拥有部署终端权限的人显式执行：
+全新站点通过初始化向导创建首个所有者，见下文。已有账号的所有者授权仍可由拥有部署终端权限的人显式执行：
 
 ```powershell
 go run ./cmd/server -promote-owner 'owner@example.com'
@@ -144,7 +146,7 @@ go run ./cmd/server -promote-owner 'owner@example.com'
 
 ## 数据库与工程
 
-两库各有 21 个前向迁移，包括 accounts、textures、players、closet、tokens、recovery_tokens、reports、audit_events；整数枚举字典在 AGENTS.md。迁移使用校验和、会话锁和 dirty 标记，拒绝篡改、遗漏或失败历史。014 增加 clientToken 加密列，015 撤销无法恢复 clientToken 的早期令牌；016–021 增加角色 UUID 策略、恢复凭据、下架状态、举报与审计。已执行 SQL 不可修改，后续变更追加迁移。
+两库各有 37 个前向迁移，包括账号、材质、令牌、恢复、审计、站点运营及导入记录；整数枚举字典在 AGENTS.md。迁移使用校验和、会话锁和 dirty 标记，拒绝篡改、遗漏或失败历史。014 增加 clientToken 加密列，015 撤销无法恢复 clientToken 的早期令牌；016–021 增加角色 UUID 策略、恢复凭据、下架状态、举报与审计；022–034 为运营与 OAuth/OIDC；035–037 扩展初始化/导入审计、运行记录与保留 UUID 策略。已执行 SQL 不可修改，后续变更追加迁移。
 
 ```powershell
 go build ./...
@@ -155,7 +157,7 @@ gofmt -l internal cmd migrations
 
 测试只使用标准库 testing，不连接外部网络或生产数据库。浏览器与双数据库集成验收记录见 HANDOVER.md。真实 Minecraft/authlib-injector 客户端联调未覆盖。
 
-正式界面在同级 `YggWeb-React` 开发，使用其 `npm run dev` 和 `npm run build`；将 `YGG_WEB_DIR` 指向该项目 `dist` 即可托管 `/web/`，前端采用 hash 路由。API 根目录仍发布元数据。没有增加 BS 的 PHP 插件/前端兼容层或旧库迁移；站点运营与 OAuth/OIDC 见下文；邮件最终消费继续使用 `/account-recovery` 功能页。
+正式界面在同级 `YggWeb-React` 开发，使用其 `npm run dev` 和 `npm run build`；将 `YGG_WEB_DIR` 指向该项目 `dist` 即可托管 `/web/`，前端采用 hash 路由。API 根目录仍发布元数据。没有增加 BS 的 PHP 插件/前端兼容层；BS 6 旧库导入见下文；站点运营与 OAuth/OIDC 见下文；邮件最终消费继续使用 `/account-recovery` 功能页。
 ## 邮件与恢复凭据
 
 启用 SMTP 后，Web 用户通过 `/api/account/verification` 请求验证邮件，未登录用户通过 `/api/auth/forgot-password` 请求重置。默认不强制未验证账号验证后才能登录。找回入口对不存在邮箱、已封禁账号、发送冷却及 SMTP 投递失败均保持 202；非法邮箱 400，邮件/Redis 未配置或不可用 503。投递失败在外层脱敏记录，不向浏览器返回 SMTP 原始文本。
@@ -283,3 +285,83 @@ mysql -h RESTORE_HOST -P 3306 -u RESTORE_USER -p --database=ygg_restore --execut
 - 功能：部署关闭与前端。实际访问 `http://127.0.0.1:55617/__disabled`，五项通过：空部署配置全部关闭、插件路由 404、旧账号仍可登录、原保留名可注册及登录。正式页面 `http://127.0.0.1:55605/web/#/admin/site` 实际读取插件清单和 `/counts`；角色页输入 Owner 显示中文插件拒绝提示且会话保留。最终查询编码调整后重新构建，在正式页面读取到合法 JSON，并确认进程重启后统计归零。
 - 实际查看 1280×720、375×812 深浅主题；375 视口文档宽 360（含滚动条差异），无横向溢出，手机宽度读取按钮可操作。页面控制台检查无 error/warn；预期 403 为业务拒绝，不是未捕获异常。状态码来自真实浏览器 Response.status；没有操作独立 DevTools Network 面板。
 - 日志抽查：两库在完整 30 项检查及当时 UI 操作后分别有 38/24 条访问记录，无重复访问 Request ID、无 5xx，各三次策略拒绝都有安全 Hook 与 Request ID；未检出测试密码、认证头、令牌或 options。测试代理、配置、脚本、数据库与截图均在 TEMP；截图 `C:/Users/shuil/AppData/Local/Temp/ygg-plugins-proof.png`。未覆盖第三方自定义插件、生产部署、进程崩溃投递、真实 Minecraft/OIDC 平台；没有迁移用户原有数据库。
+
+## 新站配置器与 BS 6 导入
+
+交互参考同级 NextSkin 的安装向导及 ADR-0031，沿用本站 BS 主题。数据库、Redis、公开 URL、私钥和材质目录仍由部署端配置；先显式运行 `-migrate`，再启动 HTTP 服务。向导不通过网页修改基础设施凭据或运行隐式迁移。
+
+### 初始化
+
+空站自动显示向导，也可访问 `/web/#/setup`。从部署端 `YGG_SETUP_CODE_FILE` 指定的文件读取安装码，验证后选择创建新站或 BS 导入。日志仅提示文件位置，不打印安装码。POSIX 文件创建权限为 0600；Windows 部署须确保所在目录 ACL 仅允许运维和服务账号读取。
+
+创建新站填写名称、所有者邮箱、密码和初始角色名，账号、角色、积分、站点配置及审计在同一事务完成，完成后进入登录页。站点地址展示当前 origin，实际外链地址由 `YGG_PUBLIC_URL` 决定。新站初始化前，普通注册及其他业务写入被拒绝；初始化后安装码不能再次使用。首个所有者也可来自导入数据：空站导入必须存在至少一个正常的 BS 所有者。
+
+### 导入流程与范围
+
+已初始化站点的所有者从管理面板“从 Blessing Skin 导入”进入 `/web/#/admin/import`。支持 BS 6 的 MySQL/MariaDB 或 PostgreSQL 旧库，源和目标可跨数据库类型。SQLite、远程对象存储和旧版 BS 需先转换或升级；本实现不自动执行这些转换。
+
+1. 粘贴旧站 `.env` 在浏览器本地预填连接、前缀和密码算法，也可手工填写；解析后清空原文。解析支持字面量赋值，不执行变量插值。非本地存储须先同步材质。旧材质目录是 Go 服务所在机器上的绝对路径，不是浏览器目录。
+2. 确认旧站时区（界面默认 `Asia/Shanghai`）、表前缀和 `PWD_METHOD`，点“检查并试跑”。旧库使用只读、可重复读事务；目标库完整写入后回滚，试跑不发布最终材质文件。
+3. 阅读报告。重复邮箱、角色名、UUID、无效密码格式和空站缺少所有者均阻止导入。`uuid` 插件表存在歧义时，在 UUID 裁决 JSON 中按旧 `pid` 指定 UUID，重新试跑；旧站随机 UUID 缺少映射时也必须提供原 UUID，不自动重算游戏身份。
+4. 成功试跑后勾选确认，再执行。实际导入重新读取旧库和验证全部数据；改动任何表单配置都会使先前试跑确认失效。切流前须停止旧站写入，避免源数据在两次运行之间变化。
+5. 查看进度或取消，完成后下载 JSON 报告。后台提供最近 20 次运行的持久报告；运行凭据和连接密码只保留在当前页面内存，刷新会丢失进度凭据，已登录所有者仍可查看运行历史。
+
+导入采用**合并且冲突拒绝**：保留本站现有数据、会话和账号；重复导入同一批数据会报告冲突并整体回滚，不提供清空目标库、覆盖现有账号或强制替换入口。勾选“导入运营配置”时，有对应字段的旧运营选项会覆盖本站这些设置；基础设施配置不变。
+
+| 来源 | 导入规则 |
+| --- | --- |
+| `users` | 邮箱规范化，映射整数权限/封禁/验证状态；源 uid 映射到本站新主键及账号 UUID；余额写入来源 6 的流水，原签到时间保留冷却 |
+| `players` / `uuid` | 保留游戏角色 UUID、名称和有效穿戴；未映射的离线角色沿用现有离线算法；明确映射和裁决按整数策略 2 存储，改名保留 UUID；逐个写后核对 |
+| `textures` | 验证 SHA-256、PNG 内容和本站支持的尺寸，原字节复制，保留公开/私有属性；缺失、损坏、尺寸不支持或无上传者的记录跳过并报告 |
+| `user_closet` | 关联转换后的主键，去重；缺失或无权限访问的私有引用跳过 |
+| `reports`（可选） | 转换有效材质和举报人引用及整数状态，缺失引用跳过；旧处理人及处理备注不恢复 |
+| `options` | 可选导入名称、简介、公告、初始积分、签到间隔/奖励、角色/存储/收藏费用等有对应字段的设置；越界阻止提交 |
+
+不会导入 PHP 会话、验证/恢复凭据、旧 OAuth 客户端与授权、IP、头像偏好或 PHP 插件。未知表名列入报告；重新配置第三方应用和登录，不迁移旧令牌。签名私钥不从旧库选项自动导入；需要延续旧密钥时由部署端备份并配置 `YGG_SIGNING_KEY_FILE`。上传/删除退费遵守本站当前规则，不复制 BS 的退款机制。
+
+批量导入直接走迁移存储入口，不触发普通注册/消费或运行插件 Hook，避免对历史数据再次扣费或重新生成身份；当前角色上限、邮箱域名和插件政策继续约束导入后的业务操作。
+
+支持 bcrypt、PHP Argon2i/Argon2id 及 MD5/SALTED2MD5/SHA256/SALTED2SHA256/SHA512/SALTED2SHA512。快速摘要先以固定长度预哈希再用 bcrypt 保护，数据库不保存原始快速摘要；验证旧密码成功后改为直接 bcrypt 密码哈希。Argon2 参数有内存/迭代上限。`SALTED2*` 还需部署端设置原 `SALT` 为 `YGG_BS_LEGACY_SALT`，未完成所有旧账号升级前不要更换；当前进程只支持一个旧站 pepper。密码输入继续受本站 72 字节上限约束。
+
+### 运行约束与命令行
+
+网页导入仅支持单实例维护窗口。同时只运行一个任务，先等待在途业务请求完成，再进入维护状态；业务 API/协议返回 503 与 Retry-After，安装、进度、取消、静态前端和 healthz 保持可访问。后台任务最长 30 分钟，支持取消和服务关闭时退出；进程异常退出的运行记录在下次启动标记失败。每张源表最多 10 万行，报告最多列出 1000 个问题，但阻止项总数完整统计。
+
+SQL 变更在一个目标事务中完成，失败或取消回滚；材质先暂存，验证后在目标卷原子发布，不覆盖已有文件。文件系统和 SQL 不能组成分布式事务，提交失败可能留下完整的无引用 hash 文件，可按现有 `-check-textures`/过龄清理流程处理，不在失败路径删除可能已被引用的文件。
+
+CLI 与网页共用导入存储入口。先停止站点服务，将 `Source` JSON 放在仅运维可读的仓库外文件中：字段为 `driver`（mysql/postgres）、`dsn`、`prefix`、`texturesDir`、`timeZone`、`passwordMethod`、`uuidOverrides`（pid 到 UUID 的字符串映射）和 `importSettings`（布尔）。凭据不放在命令行参数中。目标库需先显式迁移；CLI 无需 Redis 或签名私钥。
+
+```powershell
+server.exe -import-bs 'D:/YggServer/private/bs-source.json' -dry-run
+server.exe -import-bs 'D:/YggServer/private/bs-source.json'
+```
+
+CLI 输出 JSON 报告，失败非零退出；CLI 不写网页运行历史。实际执行仍使用同样的冲突拒绝和事务规则。
+
+### HTTP 契约
+
+成功无正文的接口不回显密码、安装码或连接信息；错误统一为 error/errorMessage。安装码校验复用现有 Redis 凭证限流。
+
+| 方法与路径 | 认证与请求 / 响应 |
+| --- | --- |
+| `GET /api/setup` | 匿名；`{required,available,running}` |
+| `POST /api/setup/verify` | `{code}`；通过 204，错误码 403，已初始化 409 |
+| `POST /api/setup` | `{code,name,email,password,player}`；创建 201，已初始化 409 |
+| `POST /api/setup/import` | 安装码；`{code,source,dryRun,confirm,previewId}` |
+| `POST /api/admin/import` | 所有者 Web Bearer；同上，无需 code |
+| 两个导入入口 | 受理 202，`{ID,RunKey}`；实际执行要求同配置且成功的 previewId 和 confirm=true，否则 409 |
+| `POST /api/import/status` / `cancel` | `{ID,RunKey}`；仅接受该进程当前运行的凭据，返回运行对象；错误凭据 403 |
+| `GET /api/admin/import/history` | 所有者；最近 20 个运行对象 |
+
+运行对象为 `{id,dryRun,state,stage,processed,report,createdAt,completedAt}`，state 为 0 运行/1 成功/2 失败/3 取消。报告含 counts、skipped、blocking、issues、players 和 omitted，不包含密码哈希、连接串、全站盐或凭据。初始化及实际导入分别写入审计动作 8/9，试跑不留下业务审计；访问日志和任务开始/结束日志仅记录最小标识、状态和计数。
+
+### 浏览器验收记录（2026-10-18–19）
+
+- 功能：新站初始化、BS 导入及权限。
+- 访问：`http://127.0.0.1:55805/web/`、`http://127.0.0.1:55806/web/`，后台 `#/admin/import`；最终 037 迁移与改名验证使用 `http://127.0.0.1:55808/web/`、`http://127.0.0.1:55809/web/`；权限诊断页 `http://127.0.0.1:55807/__security` 仅在 TEMP，不属于产品。
+- 操作：错误/正确安装码、新站创建所有者并登录；从空站与已有站发起试跑和实际导入；UUID 歧义和裁决、缺失材质、重复衣柜、重复导入；模拟旧库读取阻塞后取消；下载真实 JSON 报告、刷新历史、查看审计和导入账号积分；旧密码错误/正确登录。
+- 看到：错误码 403，创建 201；试跑和导入受理 202，成功报告阻止项 0；重复及歧义报告阻止提交；维护期间浏览器打开 `/api/site` 得到 503，取消后恢复 200，目标业务数据保持不变。权限诊断 13/13：匿名/普通账号导入及历史 403，伪造运行凭据 403，安装完成后重用 409，所有者跳过试跑 409。
+- 最终实现重新在全新隔离库交叉导入：MySQL 源到 PostgreSQL，含原生 boolean 列的 PostgreSQL 源到 MySQL。各导入用户 3、角色 2、有效材质 1、衣柜 1、举报 1；PostgreSQL 原有所有者保留，最终账号 4、角色 3。最终两库 37 个迁移、dirty=0；复制字节与 hash 一致，封禁与验证状态保留，安装码文件已删除。数据库核对无原始快速摘要；成功登录的导入账号已升级为直接 bcrypt，其余仍为 bcrypt 保护的兼容格式。
+- 浏览器看到旧账号余额 500、原 UUID `11111111111141118111111111111111` 和导入流水，审计显示“站点初始化 / BS 数据导入”；协议 profile 返回原角色及材质属性。正式前端 Console 未捕获异常。状态码来自浏览器请求及访问日志；内置浏览器无独立 DevTools Network 面板，未声称操作该面板。
+- Go build/vet/test 通过，新增测试覆盖旧密码算法及错误密码拒绝、Argon2 资源限制、快速摘要保护、PNG 完整性和源路径拒绝；前端类型检查、ESLint、33 项测试与构建通过。CLI 试跑成功，计划行数与页面一致，目标账号仍为 0；最终两库亦完成 CLI 实际提交，随后通过浏览器验证导入角色改名保留 UUID。抽查 199 条访问日志，重复 Request ID、敏感字段/已知测试密码和固定字段缺失均为 0。
+- 未覆盖：真实 BS 生产库切流、SQLite 源、多实例网页导入、生产 TLS/ACL、超大站点压力、真实 Minecraft 客户端、移动端本轮专项及进程异常强杀恢复演练。没有读取用户 `.env`、迁移生产数据库或转换用户现有游戏身份。真实截图在系统 TEMP 的 `ygg-bs-import-proof.png`。

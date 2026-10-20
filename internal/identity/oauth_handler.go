@@ -62,7 +62,7 @@ func (h *Handler) registerOAuth(mux *http.ServeMux) {
 		h.Logger.InfoContext(r.Context(), "oauth consent completed", "account_id", t.Account.ID, "client_id", q.ClientID, "approved", q.Approve, "request_id", w.Header().Get("X-Request-ID"))
 		httpapi.JSON(w, 200, map[string]string{"redirect": redirect})
 	}))
-	mux.HandleFunc("POST /oauth/token", h.limited(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /oauth/token", h.RateLimit(func(w http.ResponseWriter, r *http.Request) {
 		if !h.oauthEnabled(w, r) {
 			return
 		}

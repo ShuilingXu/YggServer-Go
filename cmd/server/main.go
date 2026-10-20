@@ -20,6 +20,7 @@ import (
 	"github.com/ShuilingXu/YggServer-Go/internal/database"
 	"github.com/ShuilingXu/YggServer-Go/internal/httpserver"
 	"github.com/ShuilingXu/YggServer-Go/internal/identity"
+	"github.com/ShuilingXu/YggServer-Go/internal/provision"
 	"github.com/ShuilingXu/YggServer-Go/internal/redisstore"
 	"github.com/ShuilingXu/YggServer-Go/internal/signing"
 	"github.com/ShuilingXu/YggServer-Go/internal/skin"
@@ -46,11 +47,16 @@ func run(logger *slog.Logger) error {
 	keyPath := flag.String("generate-key", "", "生成 RSA 4096 私钥到指定的新文件后退出")
 	migrate := flag.Bool("migrate", false, "显式执行数据库迁移后退出")
 	owner := flag.String("promote-owner", "", "将已有正常账号设为站点所有者后退出")
+	importFile := flag.String("import-bs", "", "从权限受限的 JSON 配置文件导入 BS；运行前须停止服务")
+	dryImport := flag.Bool("dry-run", false, "配合 -import-bs 完整试跑并回滚")
 	inspect := flag.Bool("check-textures", false, "检查材质引用与内容，默认仅预览孤立文件")
 	prune := flag.Bool("apply-prune", false, "配合 -check-textures 删除超过保留时间的孤立文件")
 	minAge := flag.Duration("orphan-min-age", 24*time.Hour, "孤立文件最短保留时间，至少 1h")
 	flag.Parse()
 	actions := 0
+	if *importFile != "" {
+		actions++
+	}
 	if *inspect {
 		actions++
 	}
@@ -63,7 +69,7 @@ func run(logger *slog.Logger) error {
 	if *owner != "" {
 		actions++
 	}
-	if flag.NArg() != 0 || actions > 1 || (*prune && !*inspect) || *minAge < time.Hour {
+	if flag.NArg() != 0 || actions > 1 || (*prune && !*inspect) || (*dryImport && *importFile == "") || *minAge < time.Hour {
 		return fmt.Errorf("invalid command arguments")
 	}
 	if *keyPath != "" {
@@ -76,7 +82,7 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var db *sql.DB
-	if c.DatabaseDSN != "" || *migrate || *owner != "" || *inspect {
+	if c.DatabaseDSN != "" || *migrate || *owner != "" || *inspect || *importFile != "" {
 		connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		db, err = database.Open(connectCtx, c.DatabaseDriver, c.DatabaseDSN)
 		cancel()
@@ -95,6 +101,27 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 		logger.Info("migrations complete", "driver", c.DatabaseDriver)
+		return nil
+	}
+	if *importFile != "" {
+		if err := migrations.Check(ctx, db, c.DatabaseDriver); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(*importFile)
+		if err != nil || len(data) > 65536 {
+			return fmt.Errorf("cannot read import configuration")
+		}
+		var source provision.Source
+		if json.Unmarshal(data, &source) != nil {
+			return fmt.Errorf("invalid import configuration")
+		}
+		report, importErr := (&provision.Store{DB: db, Dialect: c.DatabaseDriver, TexturesDir: c.TexturesDir, LegacySalt: c.BSLegacySalt, Now: time.Now}).Run(ctx, source, *dryImport, "", "", func(string, int) {})
+		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+			return fmt.Errorf("cannot write import report")
+		}
+		if importErr != nil {
+			return fmt.Errorf("import failed; see sanitized report")
+		}
 		return nil
 	}
 	if *inspect {
@@ -171,6 +198,9 @@ func run(logger *slog.Logger) error {
 	handler, err := httpserver.New(c, publicKey, key, db, cache, logger)
 	if err != nil {
 		return err
+	}
+	if closer, ok := handler.(interface{ Close() error }); ok {
+		defer closer.Close()
 	}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	done := make(chan error, 1)

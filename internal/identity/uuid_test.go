@@ -21,4 +21,7 @@ func TestUUIDStrategyAndRename(t *testing.T) {
 	if renamedUUID("OtherName", offline, model.UUIDOffline) != OfflineUUID("OtherName") {
 		t.Fatal("offline rename did not recalculate identity")
 	}
+	if renamedUUID("OtherName", offline, model.UUIDPreserved) != offline {
+		t.Fatal("imported identity changed on rename")
+	}
 }

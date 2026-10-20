@@ -417,7 +417,7 @@ func (s *Store) SavePlayer(ctx context.Context, a Account, uuid, name string, re
 }
 
 func renamedUUID(name, current string, strategy model.UUIDStrategy) string {
-	if strategy == model.UUIDRandom {
+	if strategy == model.UUIDRandom || strategy == model.UUIDPreserved {
 		return current
 	}
 	return OfflineUUID(name)

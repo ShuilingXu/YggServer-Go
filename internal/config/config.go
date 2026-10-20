@@ -11,12 +11,15 @@ import (
 	"net/mail"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
 
 type Config struct {
+	SetupCodeFile    string
+	BSLegacySalt     string
 	Plugins          map[string]plugin.Config
 	OIDCClientSecret string
 	ListenAddr       string
@@ -97,6 +100,11 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("invalid YGG_UUID_STRATEGY")
 	}
 	c.OIDCClientSecret = os.Getenv("YGG_OIDC_CLIENT_SECRET")
+	c.BSLegacySalt = os.Getenv("YGG_BS_LEGACY_SALT")
+	c.SetupCodeFile = os.Getenv("YGG_SETUP_CODE_FILE")
+	if c.SetupCodeFile == "" && c.TexturesDir != "" {
+		c.SetupCodeFile = filepath.Join(c.TexturesDir, "setup-code")
+	}
 	c.SMTPAddr = os.Getenv("YGG_SMTP_ADDR")
 	c.SMTPMode = value("YGG_SMTP_MODE", "starttls")
 	c.SMTPUser = os.Getenv("YGG_SMTP_USER")

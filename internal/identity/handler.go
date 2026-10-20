@@ -65,7 +65,7 @@ func (h *Handler) failure(w http.ResponseWriter, r *http.Request, err error) {
 	httpapi.Error(w, status)
 }
 
-func (h *Handler) limited(next http.HandlerFunc) http.HandlerFunc {
+func (h *Handler) RateLimit(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if h.Service == nil || h.Redis == nil {
 			h.failure(w, r, ErrUnavailable)
@@ -138,7 +138,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		httpapi.JSON(w, 200, events)
 	}))
 
-	mux.HandleFunc("POST /api/account/verification", h.Authorized(model.TokenWeb, h.limited(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/account/verification", h.Authorized(model.TokenWeb, h.RateLimit(func(w http.ResponseWriter, r *http.Request) {
 		err := h.Service.RequestRecovery(r.Context(), Current(r.Context()).Account.Email, model.RecoveryVerify)
 		if err != nil {
 			h.failure(w, r, err)
@@ -146,7 +146,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		}
 		w.WriteHeader(202)
 	})))
-	mux.HandleFunc("POST /api/auth/forgot-password", h.limited(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/auth/forgot-password", h.RateLimit(func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Email string }
 		if !httpapi.Decode(w, r, &body) {
 			return
@@ -164,7 +164,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		w.WriteHeader(202)
 	}))
 	for _, route := range []string{"POST /api/auth/verify-email", "POST /api/auth/reset-password"} {
-		mux.HandleFunc(route, h.limited(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc(route, h.RateLimit(func(w http.ResponseWriter, r *http.Request) {
 			var body struct{ Token, NewPassword string }
 			if !httpapi.Decode(w, r, &body) {
 				return
@@ -210,7 +210,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			w.WriteHeader(204)
 		}))
 	}
-	mux.HandleFunc("POST /api/auth/register", h.limited(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/auth/register", h.RateLimit(func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Email, Password, PlayerName string }
 		if !httpapi.Decode(w, r, &body) {
 			return
@@ -222,7 +222,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	for _, path := range []string{"POST /api/auth/login", "POST /authserver/authenticate"} {
-		mux.HandleFunc(path, h.limited(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc(path, h.RateLimit(func(w http.ResponseWriter, r *http.Request) {
 			var body struct {
 				Username, Password string
 				ClientToken        *string
@@ -260,7 +260,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	}))
 	mux.HandleFunc("GET /api/account", h.Authorized(model.TokenWeb, func(w http.ResponseWriter, r *http.Request) { httpapi.JSON(w, 200, Current(r.Context()).Account) }))
 	for _, path := range []string{"PUT /api/account/password", "PUT /api/account/email", "DELETE /api/account"} {
-		mux.HandleFunc(path, h.Authorized(model.TokenWeb, h.limited(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc(path, h.Authorized(model.TokenWeb, h.RateLimit(func(w http.ResponseWriter, r *http.Request) {
 			var body struct{ Password, NewPassword, Email string }
 			if !httpapi.Decode(w, r, &body) {
 				return
@@ -320,7 +320,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		}
 		w.WriteHeader(204)
 	}))
-	mux.HandleFunc("POST /authserver/refresh", h.limited(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /authserver/refresh", h.RateLimit(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			AccessToken     string
 			ClientToken     *string
@@ -361,7 +361,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			w.WriteHeader(204)
 		})
 	}
-	mux.HandleFunc("POST /authserver/signout", h.limited(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /authserver/signout", h.RateLimit(func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Username, Password string }
 		if !httpapi.Decode(w, r, &body) {
 			return

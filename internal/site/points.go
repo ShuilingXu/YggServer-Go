@@ -17,6 +17,7 @@ const (
 	PointUpload  PointKind = 3
 	PointCloset  PointKind = 4
 	PointPrivacy PointKind = 5
+	PointImport  PointKind = 6
 )
 
 // 调用方必须先锁定账号；积分变更与业务共用事务，不允许余额检查与扣款分离。

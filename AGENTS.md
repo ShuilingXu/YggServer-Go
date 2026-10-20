@@ -183,12 +183,12 @@ const (
 | `textures.is_public` | 是否进入公开皮肤库；原图鉴权由后续业务定义 | `0` 私有 / `1` 公开 |
 | `schema_migrations.dirty` | 迁移失败保护 | `0` 已完成 / `1` 执行中或失败待修复 |
 | `tokens.kind` | 登录令牌用途，Web 与游戏鉴权隔离 | `0` Web / `1` Yggdrasil |
-| `players.uuid_strategy` | 角色创建时的 UUID 策略 | `0` 离线 v3 / `1` 随机 v4 |
+| `players.uuid_strategy` | 角色 UUID 策略 | `0` 离线 v3 / `1` 随机 v4 / `2` 导入时显式保留；1/2 改名不重算 UUID |
 | `recovery_tokens.kind` | 一次性邮件凭据用途 | `0` 验证邮箱 / `1` 重置密码 |
 | `textures.state` | 材质审核状态，与隐私独立 | `0` 正常 / `1` 下架 |
 | `reports.state` | 举报处理状态 | `0` 待处理 / `1` 已处理 / `2` 已驳回 |
 | `reports.dedup_key` | 并发待处理举报唯一约束占位，使用数值主键解除占位，兼容两库无部分唯一索引的差异 | `0` 待处理 / 非零为本条举报自增 ID |
-| `audit_events.action` | 管理审计动作 | `0` 用户管理 / `1` 终端所有者授权 / `2` 材质状态 / `3` 举报处理 / `4` 站点配置 / `5` OAuth 应用管理 / `6` 外部身份绑定 / `7` 外部身份解绑 |
+| `audit_events.action` | 管理审计动作 | `0` 用户管理 / `1` 终端所有者授权 / `2` 材质状态 / `3` 举报处理 / `4` 站点配置 / `5` OAuth 应用管理 / `6` 外部身份绑定 / `7` 外部身份解绑 / `8` 站点初始化 / `9` BS 导入 |
 | `audit_events.result` | 成功提交的动作结果 | `0` 已执行 / `1` 举报已驳回 |
 | `audit_events.target_state` | 目标状态值；动作决定账号或材质语义 | `-1` 未修改或历史未知 / `0` 正常 / `1` 封禁或下架 / `2` 账号注销 |
 | `audit_events.target_permission` | 目标权限值 | `-1` 未修改或历史未知 / `0` 普通 / `1` 管理员 / `2` 所有者 |
@@ -199,7 +199,9 @@ const (
 | `site_settings.oauth_enabled` | 本站 OAuth2 授权服务开关 | `0` 关闭 / `1` 开启 |
 | `site_settings.oidc_enabled` | 第三方 OIDC 登录开关 | `0` 关闭 / `1` 开启 |
 | `oauth_grants.scope` | OAuth 权限位；API 仍用协议字符串 | `0` 无权限 / `1` User.Read / `2` Player.Read / `3` 两者 |
-| `point_entries.kind` | 积分流水来源 | `0` 初始 / `1` 签到 / `2` 新增角色 / `3` 上传 / `4` 收藏 / `5` 转私有补差价 |
+| `point_entries.kind` | 积分流水来源 | `0` 初始 / `1` 签到 / `2` 新增角色 / `3` 上传 / `4` 收藏 / `5` 转私有补差价 / `6` BS 导入余额 |
+| `import_runs.dry_run` | 是否试跑 | `0` 实际导入 / `1` 试跑 |
+| `import_runs.state` | 导入运行状态 | `0` 运行中 / `1` 成功 / `2` 失败 / `3` 取消 |
 
 
 ### 4.3 表设计
@@ -284,6 +286,7 @@ Yggdrasil 客户端兼容优先：路径、字段名、状态码、错误码按�
 - 新增原生端点：`POST /api/account/verification`、`POST /api/auth/forgot-password`、`POST /api/auth/verify-email`、`POST /api/auth/reset-password`、`GET /account-recovery`；`GET /api/textures/{uuid}/avatar`、`GET /api/textures/{uuid}/preview`、`POST /api/textures/{uuid}/reports`；`GET /api/admin/reports`、`PUT /api/admin/reports/{uuid}`、`PUT /api/admin/textures/{uuid}/state`、`GET /api/admin/audit`。字段、状态码与权限见 README。
 - 站点运营端点：`GET /api/site`、`PUT /api/admin/site`、`GET /api/account/points`、`POST /api/account/sign`；`GET/POST /api/admin/oauth/clients`、`DELETE /api/admin/oauth/clients/{uuid}`、`GET /api/oauth/client`、`POST /api/oauth/authorize`、`GET /oauth/authorize`、`POST /oauth/token`、`GET /oauth/userinfo`、`GET /oauth/players`、`GET /api/account/oauth`、`DELETE /api/account/oauth/{uuid}`；`POST /api/auth/oidc/start`、`POST /api/auth/oidc/complete`、`GET /oidc/callback`、`GET /api/account/oidc`、`POST /api/account/oidc/start`、`DELETE /api/account/oidc/{uuid}`。字段与权限见 README。
 - 插件入口：所有者 `GET /api/admin/plugins` 查看运行清单；所有者 `GET /api/plugins/{插件ID}/{声明路径}` 查询插件 JSON，内置 `GET /api/plugins/activity/counts`。插件开发契约与 Hook 时点见 `plugin/README.md`。
+- 初始化与导入：`GET /api/setup`；安装码保护的 `POST /api/setup/verify`、`POST /api/setup`、`POST /api/setup/import`；所有者 `POST /api/admin/import`、`GET /api/admin/import/history`；单次运行凭据保护的 `POST /api/import/status`、`POST /api/import/cancel`。浏览器入口 `/web/#/setup`、`/web/#/admin/import`，字段和边界见 README。
 - 破坏性变更（字段改名、语义变化）必须先问用户。
 
 ### 6.3 安全底线
@@ -437,6 +440,7 @@ $dir = Get-ChildItem "$env:LOCALAPPDATA\GitHubDesktop" -Directory |
 | 2026-10-17 | 恢复凭据长度误判 | `crypto/rand.Text()` 返回 26 位，新增校验误要求 32 位，构建测试通过但浏览器验证邮件返回 403 | 长度边界与生成器一致，并通过实际邮件发送、一次性消费路径验收 |
 | 2026-10-18 | 新审计动作未扩展旧 CHECK | 编译测试通过但浏览器保存站点配置返回 500 | 新增两库前向迁移扩展动作约束；新增动作时同时检查数据库约束与前端映射 |
 | 2026-10-18 | ServeMux 兜底覆盖方法拒绝 | 插件仅注册 GET，但浏览器 POST 得到兜底 404 | 插件已声明路径显式检查 GET/HEAD，其余返回 405 与 Allow；未知路径仍为 404 |
+| 2026-10-19 | 前端未知翻译键回退错误文案 | 构建通过，但导入历史刷新按钮显示通用页面错误，向导返回按钮借用皮肤库文案 | 按页面用途增加专用翻译键，并在浏览器检查操作文字，不能用构建通过代替页面验收 |
 |  |  |  |  |
 
 ---
